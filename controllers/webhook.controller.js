@@ -1,8 +1,12 @@
 const Message = require("../models/message.model");
+
 const {
   sendWhatsAppMessage,
 } = require("../services/whatsapp.service");
-const { parseReminder } = require("../services/ai.service");
+
+const {
+  processReminderMessage,
+} = require("../services/reminder.pipeline.service");
 
 // GET /api/whatsapp/webhook
 // Meta uses this to verify our webhook
@@ -92,21 +96,26 @@ const receiveWebhook = async (req, res) => {
     });
 
     // --------------------------------
-    // AI REMINDER PARSING
+    // REMINDER PIPELINE
     // --------------------------------
 
-    const aiResult = await parseReminder(text);
+    const result = await processReminderMessage({
+      phoneNumber: from,
+      message: text,
+    });
 
-    console.log("AI result:", aiResult);
+    console.log("Reminder pipeline result:", result);
 
     let reply;
 
-    if (aiResult.intent === "create_reminder") {
+    if (result.isReminder) {
+      const reminder = result.reminder;
+
       reply =
-        `✅ Reminder detected!\n\n` +
-        `📝 Task: ${aiResult.task}\n` +
-        `⏰ Time: ${aiResult.timeText}\n\n` +
-        `I'll remind you then.`;
+        `✅ Reminder created!\n\n` +
+        `📝 Task: ${reminder.task}\n` +
+        `⏰ Type: ${reminder.reminderType}\n\n` +
+        `I'll remind you at the scheduled time.`;
     } else {
       reply =
         `👋 Hi! I'm Reminder PA.\n\n` +
@@ -116,7 +125,7 @@ const receiveWebhook = async (req, res) => {
         `"Remind me to study React tomorrow at 8 PM"`;
     }
 
-    // Send AI-based response
+    // Send response to user
     await sendWhatsAppMessage(from, reply);
 
     return res.sendStatus(200);
@@ -127,11 +136,10 @@ const receiveWebhook = async (req, res) => {
       error.response?.data || error.message
     );
 
-    // Important: still acknowledge Meta
+    // Always acknowledge Meta
     return res.sendStatus(200);
   }
 };
-
 
 module.exports = {
   verifyWebhook,
