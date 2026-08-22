@@ -8,7 +8,7 @@ const checkForNoReplyReminders = async () => {
   try {
     // Prototype:
     // User gets 5 minutes to acknowledge the reminder.
-    const NO_REPLY_MINUTES = 5;
+    const NO_REPLY_MINUTES = 3;
 
     const cutoffTime = new Date(
       Date.now() - NO_REPLY_MINUTES * 60 * 1000
