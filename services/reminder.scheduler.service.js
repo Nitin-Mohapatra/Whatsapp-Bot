@@ -102,9 +102,12 @@ const processDueReminders = async () => {
         ) {
           claimedReminder.lastSentAt = new Date();
 
+          claimedReminder.acknowledged = false;
+          claimedReminder.acknowledgedAt = null;
+
           claimedReminder.nextRunAt = new Date(
             Date.now() +
-              claimedReminder.intervalMinutes * 60 * 1000
+            claimedReminder.intervalMinutes * 60 * 1000
           );
 
           claimedReminder.status = "pending";

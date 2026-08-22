@@ -8,6 +8,10 @@ const {
   processReminderMessage,
 } = require("../services/reminder.pipeline.service");
 
+const {
+  acknowledgeLatestReminder,
+} = require("../services/reminder.acknowledgement.service");
+
 // GET /api/whatsapp/webhook
 // Meta uses this to verify our webhook
 const verifyWebhook = (req, res) => {
@@ -72,7 +76,10 @@ const receiveWebhook = async (req, res) => {
     console.log("From:", from);
     console.log("Message:", text);
 
-    // Prevent duplicate webhook processing
+    // --------------------------------
+    // PREVENT DUPLICATE PROCESSING
+    // --------------------------------
+
     const existingMessage = await Message.findOne({
       whatsappMessageId: messageId,
     });
@@ -83,7 +90,10 @@ const receiveWebhook = async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Save incoming message
+    // --------------------------------
+    // SAVE INCOMING MESSAGE
+    // --------------------------------
+
     await Message.create({
       whatsappMessageId: messageId,
       from,
@@ -96,7 +106,30 @@ const receiveWebhook = async (req, res) => {
     });
 
     // --------------------------------
-    // REMINDER PIPELINE
+    // STEP 3.6.6.3
+    // CHECK WHETHER THIS IS A
+    // REMINDER ACKNOWLEDGMENT
+    // --------------------------------
+
+    const acknowledgmentResult =
+      await acknowledgeLatestReminder(from);
+
+    if (acknowledgmentResult.acknowledged) {
+      console.log(
+        "Reminder acknowledged:",
+        acknowledgmentResult.reminder.task
+      );
+
+      await sendWhatsAppMessage(
+        from,
+        `✅ Got it! "${acknowledgmentResult.reminder.task}" has been marked as completed.`
+      );
+
+      return res.sendStatus(200);
+    }
+
+    // --------------------------------
+    // REMINDER CREATION PIPELINE
     // --------------------------------
 
     const result = await processReminderMessage({
