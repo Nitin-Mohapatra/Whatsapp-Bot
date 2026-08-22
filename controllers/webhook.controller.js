@@ -2,7 +2,7 @@ const Message = require("../models/message.model");
 const {
   sendWhatsAppMessage,
 } = require("../services/whatsapp.service");
-
+const { parseReminder } = require("../services/ai.service");
 
 // GET /api/whatsapp/webhook
 // Meta uses this to verify our webhook
@@ -45,11 +45,8 @@ const receiveWebhook = async (req, res) => {
     }
 
     const entry = body.entry?.[0];
-
     const change = entry?.changes?.[0];
-
     const value = change?.value;
-
     const message = value?.messages?.[0];
 
     // Sometimes Meta sends status updates instead of messages
@@ -94,11 +91,33 @@ const receiveWebhook = async (req, res) => {
       rawPayload: body,
     });
 
-    // Temporary reply
-    await sendWhatsAppMessage(
-      from,
-      `I received your message: "${text}"\n\nReminder PA backend is working 🚀`
-    );
+    // --------------------------------
+    // AI REMINDER PARSING
+    // --------------------------------
+
+    const aiResult = await parseReminder(text);
+
+    console.log("AI result:", aiResult);
+
+    let reply;
+
+    if (aiResult.intent === "create_reminder") {
+      reply =
+        `✅ Reminder detected!\n\n` +
+        `📝 Task: ${aiResult.task}\n` +
+        `⏰ Time: ${aiResult.timeText}\n\n` +
+        `I'll remind you then.`;
+    } else {
+      reply =
+        `👋 Hi! I'm Reminder PA.\n\n` +
+        `You can ask me things like:\n` +
+        `"Remind me to call Rahul at 6 PM"\n\n` +
+        `or\n\n` +
+        `"Remind me to study React tomorrow at 8 PM"`;
+    }
+
+    // Send AI-based response
+    await sendWhatsAppMessage(from, reply);
 
     return res.sendStatus(200);
 

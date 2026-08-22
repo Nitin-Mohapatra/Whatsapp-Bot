@@ -3,6 +3,7 @@ const cors = require("cors");
 
 const whatsappRoutes = require("./routes/whatsapp.routes");
 const webhookRoutes = require("./routes/webhook.routes");
+const aiRoutes = require("./routes/ai.routes");
 
 const app = express();
 
@@ -19,5 +20,7 @@ app.get("/", (req, res) => {
 app.use("/api/whatsapp", whatsappRoutes);
 
 app.use("/api/whatsapp", webhookRoutes);
+
+app.use("/api/ai", aiRoutes);
 
 module.exports = app;
