@@ -29,13 +29,23 @@ const reminderSchema = new mongoose.Schema(
       type: Number,
       default: null,
     },
-    
+
     acknowledged: {
       type: Boolean,
       default: false
     },
 
     acknowledgedAt: {
+      type: Date,
+      default: null
+    },
+
+    escalationRequired: {
+      type: Boolean,
+      default: false
+    },
+
+    escalationAt: {
       type: Date,
       default: null
     },

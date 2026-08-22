@@ -8,7 +8,10 @@ const processDueReminders = async () => {
   try {
     const now = new Date();
 
-    // Find reminders that are due
+    // --------------------------------
+    // FIND DUE REMINDERS
+    // --------------------------------
+
     const dueReminders = await Reminder.find({
       status: "pending",
       nextRunAt: {
@@ -79,14 +82,25 @@ const processDueReminders = async () => {
         // --------------------------------
 
         if (claimedReminder.reminderType === "one_time") {
-          claimedReminder.status = "completed";
+          // IMPORTANT:
+          // Do NOT mark as completed here.
+          //
+          // The reminder is completed only when
+          // the user replies/acknowledges it.
+
           claimedReminder.lastSentAt = new Date();
+
+          // Keep it pending so the no-reply
+          // detection service can find it.
+          claimedReminder.status = "pending";
+
+          // Prevent scheduler from sending it again.
           claimedReminder.nextRunAt = null;
 
           await claimedReminder.save();
 
           console.log(
-            `✅ One-time reminder completed: ${claimedReminder._id}`
+            `📨 One-time reminder sent, waiting for acknowledgment: ${claimedReminder._id}`
           );
 
           continue;
@@ -102,12 +116,9 @@ const processDueReminders = async () => {
         ) {
           claimedReminder.lastSentAt = new Date();
 
-          claimedReminder.acknowledged = false;
-          claimedReminder.acknowledgedAt = null;
-
           claimedReminder.nextRunAt = new Date(
             Date.now() +
-            claimedReminder.intervalMinutes * 60 * 1000
+              claimedReminder.intervalMinutes * 60 * 1000
           );
 
           claimedReminder.status = "pending";
