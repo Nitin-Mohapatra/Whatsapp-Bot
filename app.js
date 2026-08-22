@@ -5,6 +5,8 @@ const whatsappRoutes = require("./routes/whatsapp.routes");
 const webhookRoutes = require("./routes/webhook.routes");
 const aiRoutes = require("./routes/ai.routes");
 
+const reminderRoutes = require("./routes/reminder.routes");
+
 const app = express();
 
 app.use(cors());
@@ -20,6 +22,8 @@ app.get("/", (req, res) => {
 app.use("/api/whatsapp", whatsappRoutes);
 
 app.use("/api/whatsapp", webhookRoutes);
+
+app.use("/api/reminders", reminderRoutes);
 
 app.use("/api/ai", aiRoutes);
 
