@@ -31,10 +31,16 @@ const reminderSchema = new mongoose.Schema(
     },
 
     status: {
-      type: String,
-      enum: ["pending", "sent", "cancelled", "completed"],
-      default: "pending",
-    },
+  type: String,
+  enum: [
+    "pending",
+    "processing",
+    "sent",
+    "cancelled",
+    "completed",
+  ],
+  default: "pending",
+},
 
     lastSentAt: {
       type: Date,

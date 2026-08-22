@@ -1,53 +1,92 @@
 const Reminder = require("../models/reminder.model");
 
-// We will connect this to your existing WhatsApp sending service
-const { sendWhatsAppMessage } = require("./whatsapp.service");
+const {
+  sendWhatsAppMessage,
+} = require("./whatsapp.service");
 
 const processDueReminders = async () => {
   try {
     const now = new Date();
 
-    const reminders = await Reminder.find({
+    // Find reminders that are due
+    const dueReminders = await Reminder.find({
       status: "pending",
       nextRunAt: {
         $lte: now,
       },
     });
 
-    if (reminders.length === 0) {
+    if (dueReminders.length === 0) {
       return;
     }
 
-    console.log(`⏰ Found ${reminders.length} due reminder(s)`);
+    console.log(
+      `⏰ Found ${dueReminders.length} due reminder(s)`
+    );
 
-    for (const reminder of reminders) {
+    for (const reminder of dueReminders) {
       try {
+        // --------------------------------
+        // ATOMIC CLAIM
+        // --------------------------------
+
+        const claimedReminder = await Reminder.findOneAndUpdate(
+          {
+            _id: reminder._id,
+            status: "pending",
+            nextRunAt: {
+              $lte: new Date(),
+            },
+          },
+          {
+            $set: {
+              status: "processing",
+            },
+          },
+          {
+            new: true,
+          }
+        );
+
+        // Another scheduler already claimed it
+        if (!claimedReminder) {
+          console.log(
+            `⏭️ Reminder already being processed: ${reminder._id}`
+          );
+
+          continue;
+        }
+
         console.log(
-          `Sending reminder to ${reminder.phoneNumber}: ${reminder.task}`
+          `🔒 Claimed reminder: ${claimedReminder._id}`
         );
 
         // --------------------------------
         // SEND WHATSAPP MESSAGE
         // --------------------------------
 
+        console.log(
+          `📤 Sending reminder to ${claimedReminder.phoneNumber}: ${claimedReminder.task}`
+        );
+
         await sendWhatsAppMessage(
-          reminder.phoneNumber,
-          `⏰ Reminder: ${reminder.task}`
+          claimedReminder.phoneNumber,
+          `⏰ Reminder: ${claimedReminder.task}`
         );
 
         // --------------------------------
         // ONE-TIME REMINDER
         // --------------------------------
 
-        if (reminder.reminderType === "one_time") {
-          reminder.status = "completed";
-          reminder.lastSentAt = new Date();
-          reminder.nextRunAt = null;
+        if (claimedReminder.reminderType === "one_time") {
+          claimedReminder.status = "completed";
+          claimedReminder.lastSentAt = new Date();
+          claimedReminder.nextRunAt = null;
 
-          await reminder.save();
+          await claimedReminder.save();
 
           console.log(
-            `✅ One-time reminder completed: ${reminder._id}`
+            `✅ One-time reminder completed: ${claimedReminder._id}`
           );
 
           continue;
@@ -58,19 +97,22 @@ const processDueReminders = async () => {
         // --------------------------------
 
         if (
-          reminder.reminderType === "recurring" &&
-          reminder.intervalMinutes
+          claimedReminder.reminderType === "recurring" &&
+          claimedReminder.intervalMinutes
         ) {
-          reminder.lastSentAt = new Date();
+          claimedReminder.lastSentAt = new Date();
 
-          reminder.nextRunAt = new Date(
-            Date.now() + reminder.intervalMinutes * 60 * 1000
+          claimedReminder.nextRunAt = new Date(
+            Date.now() +
+              claimedReminder.intervalMinutes * 60 * 1000
           );
 
-          await reminder.save();
+          claimedReminder.status = "pending";
+
+          await claimedReminder.save();
 
           console.log(
-            `🔁 Next reminder scheduled for: ${reminder.nextRunAt}`
+            `🔁 Next reminder scheduled for: ${claimedReminder.nextRunAt}`
           );
         }
       } catch (error) {
@@ -78,10 +120,37 @@ const processDueReminders = async () => {
           `❌ Failed reminder ${reminder._id}:`,
           error.message
         );
+
+        // --------------------------------
+        // RELEASE CLAIM IF SENDING FAILED
+        // --------------------------------
+
+        try {
+          await Reminder.findByIdAndUpdate(
+            reminder._id,
+            {
+              $set: {
+                status: "pending",
+              },
+            }
+          );
+
+          console.log(
+            `↩️ Reminder returned to pending: ${reminder._id}`
+          );
+        } catch (updateError) {
+          console.error(
+            `❌ Failed to reset reminder ${reminder._id}:`,
+            updateError.message
+          );
+        }
       }
     }
   } catch (error) {
-    console.error("Scheduler error:", error);
+    console.error(
+      "Scheduler error:",
+      error.message
+    );
   }
 };
 
