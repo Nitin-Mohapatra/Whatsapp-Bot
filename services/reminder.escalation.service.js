@@ -1,5 +1,9 @@
 const Reminder = require("../models/reminder.model");
 
+const {
+  makeReminderCall,
+} = require("./twilio.service");
+
 const checkForNoReplyReminders = async () => {
   try {
     // Prototype:
@@ -33,18 +37,43 @@ const checkForNoReplyReminders = async () => {
     );
 
     for (const reminder of reminders) {
-      reminder.escalationRequired = true;
-      reminder.escalationAt = new Date();
+      try {
+        // --------------------------------
+        // MARK ESCALATION REQUIRED
+        // --------------------------------
 
-      await reminder.save();
+        reminder.escalationRequired = true;
+        reminder.escalationAt = new Date();
 
-      console.log(
-        `🚨 Escalation required for reminder: ${reminder._id}`
-      );
+        await reminder.save();
 
-      console.log(
-        `📞 No reply received for task: ${reminder.task}`
-      );
+        console.log(
+          `🚨 Escalation required for reminder: ${reminder._id}`
+        );
+
+        console.log(
+          `📞 No reply received for task: ${reminder.task}`
+        );
+
+        // --------------------------------
+        // TWILIO CALL
+        // --------------------------------
+
+        const call = await makeReminderCall({
+          phoneNumber: reminder.phoneNumber,
+          task: reminder.task,
+        });
+
+        console.log(
+          `📞 Escalation call initiated: ${call.sid}`
+        );
+
+      } catch (error) {
+        console.error(
+          `❌ Escalation failed for reminder ${reminder._id}:`,
+          error.message
+        );
+      }
     }
   } catch (error) {
     console.error(

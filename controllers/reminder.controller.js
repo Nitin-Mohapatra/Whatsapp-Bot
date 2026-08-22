@@ -1,4 +1,7 @@
 const Reminder = require("../models/reminder.model");
+const {
+  makeReminderCall,
+} = require("../services/twilio.service");
 
 const createReminder = async (req, res) => {
   try {
@@ -71,6 +74,51 @@ const createReminder = async (req, res) => {
   }
 };
 
+const testTwilioCall = async (req, res) => {
+  try {
+    const {
+      phoneNumber,
+      task,
+    } = req.body;
+
+    if (!phoneNumber || !task) {
+      return res.status(400).json({
+        success: false,
+        message: "phoneNumber and task are required",
+      });
+    }
+
+    const call = await makeReminderCall({
+      phoneNumber,
+      task,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Twilio call initiated successfully",
+      data: {
+        callSid: call.sid,
+        status: call.status,
+        to: call.to,
+        from: call.from,
+      },
+    });
+
+  } catch (error) {
+    console.error(
+      "Twilio test call error:",
+      error.message
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to initiate Twilio call",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   createReminder,
+  testTwilioCall,
 };
