@@ -42,7 +42,7 @@ const receiveWebhook = async (req, res) => {
   try {
     console.log(
       "Incoming WhatsApp webhook:",
-      JSON.stringify(req.body, null, 2)
+      // JSON.stringify(req.body, null, 2)
     );
 
     const body = req.body;
