@@ -1,5 +1,6 @@
 const OpenAI = require("openai");
 
+
 // ============================================================
 // MEMORY SERVICE
 // ============================================================
@@ -16,13 +17,16 @@ const {
 let jsonrepair = null;
 
 try {
-  const repairModule = require("jsonrepair");
+  const repairModule =
+    require("jsonrepair");
 
   jsonrepair =
     repairModule.jsonrepair ||
     repairModule.default ||
     repairModule;
+
 } catch (error) {
+
   console.warn(
     "⚠️ jsonrepair package not found. JSON repair fallback disabled."
   );
@@ -34,9 +38,13 @@ try {
 // ============================================================
 
 const client = new OpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY,
-  baseURL: "https://openrouter.ai/api/v1",
+  apiKey:
+    process.env.OPENROUTER_API_KEY,
+
+  baseURL:
+    "https://openrouter.ai/api/v1",
 });
+
 
 const MODEL =
   process.env.OPENROUTER_MODEL ||
@@ -60,7 +68,10 @@ const defaultRouterResult = {
 // NORMALIZE ROUTER RESULT
 // ============================================================
 
-const normalizeRouterResult = (result) => {
+const normalizeRouterResult = (
+  result
+) => {
+
   if (
     !result ||
     typeof result !== "object" ||
@@ -78,43 +89,50 @@ const normalizeRouterResult = (result) => {
     "unknown",
   ];
 
-  const intent = allowedIntents.includes(result.intent)
-    ? result.intent
-    : null;
+  const intent =
+    allowedIntents.includes(
+      result.intent
+    )
+      ? result.intent
+      : null;
 
   if (!intent) {
     return null;
   }
 
-  let confidence = Number(result.confidence);
+  let confidence =
+    Number(result.confidence);
 
   if (Number.isNaN(confidence)) {
     confidence = 0.5;
   }
 
-  confidence = Math.max(
-    0,
-    Math.min(1, confidence)
-  );
+  confidence =
+    Math.max(
+      0,
+      Math.min(1, confidence)
+    );
 
   return {
     intent,
-
     confidence,
 
     task:
-      typeof result.task === "string" &&
+      typeof result.task ===
+        "string" &&
       result.task.trim()
         ? result.task.trim()
         : null,
 
     timeText:
-      typeof result.timeText === "string" &&
+      typeof result.timeText ===
+        "string" &&
       result.timeText.trim()
         ? result.timeText.trim()
         : null,
 
-    recurring: Boolean(result.recurring),
+    recurring:
+      Boolean(result.recurring),
   };
 };
 
@@ -123,18 +141,26 @@ const normalizeRouterResult = (result) => {
 // ACKNOWLEDGMENT DETECTION
 // ============================================================
 
-const isAcknowledgmentMessage = (message) => {
+const isAcknowledgmentMessage = (
+  message
+) => {
+
   if (!message) {
     return false;
   }
 
-  const text = message
-    .trim()
-    .toLowerCase();
+  const text =
+    message
+      .trim()
+      .toLowerCase();
 
-  const normalized = text
-    .replace(/[.!?,]+$/g, "")
-    .trim();
+  const normalized =
+    text
+      .replace(
+        /[.!?,]+$/g,
+        ""
+      )
+      .trim();
 
   const acknowledgmentPatterns = [
     "done",
@@ -179,14 +205,18 @@ const isAcknowledgmentMessage = (message) => {
 // LOCAL REMINDER DETECTION
 // ============================================================
 
-const looksLikeReminder = (message) => {
+const looksLikeReminder = (
+  message
+) => {
+
   if (!message) {
     return false;
   }
 
-  const text = message
-    .toLowerCase()
-    .trim();
+  const text =
+    message
+      .toLowerCase()
+      .trim();
 
   const reminderPatterns = [
     /\bremind me\b/,
@@ -196,27 +226,45 @@ const looksLikeReminder = (message) => {
   ];
 
   return reminderPatterns.some(
-    (pattern) => pattern.test(text)
+    (pattern) =>
+      pattern.test(text)
   );
 };
 
 
 // ============================================================
-// EXTRACT JSON FROM AI RESPONSE
+// EXTRACT JSON CANDIDATE
 // ============================================================
 
-const extractJsonCandidate = (content) => {
-  if (!content || typeof content !== "string") {
+const extractJsonCandidate = (
+  content
+) => {
+
+  if (
+    !content ||
+    typeof content !== "string"
+  ) {
     return null;
   }
 
-  let cleaned = content.trim();
+  let cleaned =
+    content.trim();
 
-  cleaned = cleaned
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
+  cleaned =
+    cleaned
+      .replace(
+        /^```json\s*/i,
+        ""
+      )
+      .replace(
+        /^```\s*/i,
+        ""
+      )
+      .replace(
+        /\s*```$/i,
+        ""
+      )
+      .trim();
 
   const firstBrace =
     cleaned.indexOf("{");
@@ -229,10 +277,11 @@ const extractJsonCandidate = (content) => {
     lastBrace !== -1 &&
     lastBrace > firstBrace
   ) {
-    cleaned = cleaned.slice(
-      firstBrace,
-      lastBrace + 1
-    );
+    cleaned =
+      cleaned.slice(
+        firstBrace,
+        lastBrace + 1
+      );
   }
 
   return cleaned;
@@ -240,10 +289,13 @@ const extractJsonCandidate = (content) => {
 
 
 // ============================================================
-// PARSE AI JSON SAFELY
+// PARSE AI JSON
 // ============================================================
 
-const parseAIJson = (content) => {
+const parseAIJson = (
+  content
+) => {
+
   if (
     !content ||
     typeof content !== "string"
@@ -251,17 +303,24 @@ const parseAIJson = (content) => {
     return null;
   }
 
-  const raw = content.trim();
+  const raw =
+    content.trim();
 
   if (
     raw
       .toLowerCase()
-      .includes("user safety") ||
-    raw.toLowerCase() === "safe" ||
+      .includes(
+        "user safety"
+      ) ||
+    raw.toLowerCase() ===
+      "safe" ||
     raw
       .toLowerCase()
-      .includes("safety: safe")
+      .includes(
+        "safety: safe"
+      )
   ) {
+
     console.warn(
       "⚠️ AI returned safety text instead of router JSON."
     );
@@ -276,28 +335,50 @@ const parseAIJson = (content) => {
     return null;
   }
 
+
+  /*
+  Normal JSON
+  */
+
   try {
-    return JSON.parse(candidate);
+    return JSON.parse(
+      candidate
+    );
+
   } catch (error) {
+
     console.warn(
       "⚠️ Normal JSON.parse failed. Trying jsonrepair..."
     );
   }
 
+
+  /*
+  jsonrepair
+  */
+
   if (jsonrepair) {
+
     try {
+
       const repaired =
-        jsonrepair(candidate);
+        jsonrepair(
+          candidate
+        );
 
       const parsed =
-        JSON.parse(repaired);
+        JSON.parse(
+          repaired
+        );
 
       console.log(
         "🔧 AI repaired JSON successfully."
       );
 
       return parsed;
+
     } catch (error) {
+
       console.error(
         "❌ jsonrepair failed:",
         error.message
@@ -316,60 +397,89 @@ const parseAIJson = (content) => {
 const localFallbackRouter = (
   message
 ) => {
+
   if (
     !message ||
     !message.trim()
   ) {
+
     return {
       ...defaultRouterResult,
-      intent: "unknown",
-      confidence: 1,
+
+      intent:
+        "unknown",
+
+      confidence:
+        1,
     };
   }
 
+
   if (
-    isAcknowledgmentMessage(message)
+    isAcknowledgmentMessage(
+      message
+    )
   ) {
+
     return {
       intent:
         "acknowledge_reminder",
 
-      confidence: 1,
+      confidence:
+        1,
 
-      task: null,
+      task:
+        null,
 
-      timeText: null,
+      timeText:
+        null,
 
-      recurring: false,
+      recurring:
+        false,
     };
   }
+
 
   if (
-    looksLikeReminder(message)
+    looksLikeReminder(
+      message
+    )
   ) {
+
     return {
-      intent: "create_reminder",
+      intent:
+        "create_reminder",
 
-      confidence: 0.85,
+      confidence:
+        0.85,
 
-      task: null,
+      task:
+        null,
 
-      timeText: null,
+      timeText:
+        null,
 
-      recurring: false,
+      recurring:
+        false,
     };
   }
 
+
   return {
-    intent: "conversation",
+    intent:
+      "conversation",
 
-    confidence: 0.7,
+    confidence:
+      0.7,
 
-    task: null,
+    task:
+      null,
 
-    timeText: null,
+    timeText:
+      null,
 
-    recurring: false,
+    recurring:
+      false,
   };
 };
 
@@ -381,38 +491,58 @@ const localFallbackRouter = (
 const parseReminder = async (
   message
 ) => {
+
   try {
+
     if (
       !message ||
       !message.trim()
     ) {
+
       return {
-        intent: "unknown",
-        confidence: 1,
-        task: null,
-        timeText: null,
-        recurring: false,
+        intent:
+          "unknown",
+
+        confidence:
+          1,
+
+        task:
+          null,
+
+        timeText:
+          null,
+
+        recurring:
+          false,
       };
     }
 
-    // ========================================================
-    // FAST LOCAL ACKNOWLEDGMENT
-    // ========================================================
+
+    /*
+    Fast acknowledgment
+    */
 
     if (
-      isAcknowledgmentMessage(message)
+      isAcknowledgmentMessage(
+        message
+      )
     ) {
+
       const result = {
         intent:
           "acknowledge_reminder",
 
-        confidence: 1,
+        confidence:
+          1,
 
-        task: null,
+        task:
+          null,
 
-        timeText: null,
+        timeText:
+          null,
 
-        recurring: false,
+        recurring:
+          false,
       };
 
       console.log(
@@ -423,9 +553,10 @@ const parseReminder = async (
       return result;
     }
 
-    // ========================================================
-    // AI ROUTER PROMPT
-    // ========================================================
+
+    /*
+    Router prompt
+    */
 
     const systemPrompt = `
 You are the central AI router for a personal WhatsApp assistant.
@@ -449,22 +580,11 @@ You MUST return exactly one JSON object.
 Allowed intents:
 
 1. create_reminder
-   The user wants to create a reminder.
-
 2. acknowledge_reminder
-   The user is acknowledging/completing a reminder.
-
 3. conversation
-   The user is simply talking to the assistant.
-
 4. cancel_reminder
-   The user wants to cancel an existing reminder.
-
 5. reschedule_reminder
-   The user wants to change the time of an existing reminder.
-
 6. unknown
-   The message cannot confidently be classified.
 
 JSON structure:
 
@@ -476,13 +596,9 @@ JSON structure:
   "recurring": false
 }
 
-IMPORTANT RULES:
-
-For create_reminder:
+Examples:
 
 "Remind me to call Mom tomorrow at 8 AM"
-
-must become:
 
 {
   "intent": "create_reminder",
@@ -492,11 +608,7 @@ must become:
   "recurring": false
 }
 
-For recurring:
-
 "Remind me to drink water every 2 hours"
-
-must become:
 
 {
   "intent": "create_reminder",
@@ -506,11 +618,7 @@ must become:
   "recurring": true
 }
 
-For conversation:
-
 "Hey how are you?"
-
-must become:
 
 {
   "intent": "conversation",
@@ -520,11 +628,7 @@ must become:
   "recurring": false
 }
 
-For acknowledgment:
-
 "done"
-
-must become:
 
 {
   "intent": "acknowledge_reminder",
@@ -533,13 +637,9 @@ must become:
   "timeText": null,
   "recurring": false
 }
-
-For emoji:
 
 "👍"
 
-must become:
-
 {
   "intent": "acknowledge_reminder",
   "confidence": 1,
@@ -548,11 +648,7 @@ must become:
   "recurring": false
 }
 
-For cancellation:
-
 "Cancel my reminder to call Mom"
-
-must become:
 
 {
   "intent": "cancel_reminder",
@@ -562,11 +658,7 @@ must become:
   "recurring": false
 }
 
-For rescheduling:
-
 "Move my call Mom reminder to tomorrow at 5 PM"
-
-must become:
 
 {
   "intent": "reschedule_reminder",
@@ -576,87 +668,113 @@ must become:
   "recurring": false
 }
 
-The task should contain ONLY the actual task.
-
-Do not include the words "remind me" in task.
+Do not include "remind me" in the task.
 
 Return JSON only.
 `;
 
-    // ========================================================
-    // CALL OPENROUTER
-    // ========================================================
 
     let response;
 
+
     try {
+
       response =
         await client.chat.completions.create({
-          model: MODEL,
+          model:
+            MODEL,
 
-          temperature: 0,
+          temperature:
+            0,
 
           messages: [
             {
-              role: "system",
-              content: systemPrompt,
+              role:
+                "system",
+
+              content:
+                systemPrompt,
             },
+
             {
-              role: "user",
-              content: message.trim(),
+              role:
+                "user",
+
+              content:
+                message.trim(),
             },
           ],
 
           response_format: {
-            type: "json_object",
+            type:
+              "json_object",
           },
         });
-    } catch (structuredError) {
+
+    } catch (
+      structuredError
+    ) {
+
       console.warn(
         "⚠️ Structured JSON request failed. Retrying without response_format..."
       );
 
       response =
         await client.chat.completions.create({
-          model: MODEL,
+          model:
+            MODEL,
 
-          temperature: 0,
+          temperature:
+            0,
 
           messages: [
             {
-              role: "system",
-              content: systemPrompt,
+              role:
+                "system",
+
+              content:
+                systemPrompt,
             },
+
             {
-              role: "user",
-              content: message.trim(),
+              role:
+                "user",
+
+              content:
+                message.trim(),
             },
           ],
         });
     }
+
 
     const content =
       response
         ?.choices?.[0]
         ?.message?.content;
 
+
     console.log(
       "🤖 AI raw response:",
       content
     );
 
-    // ========================================================
-    // PARSE RESPONSE
-    // ========================================================
 
     const parsed =
-      parseAIJson(content);
+      parseAIJson(
+        content
+      );
+
 
     if (parsed) {
+
       const normalized =
-        normalizeRouterResult(parsed);
+        normalizeRouterResult(
+          parsed
+        );
 
       if (normalized) {
+
         console.log(
           "🧠 AI Router Result:",
           normalized
@@ -664,44 +782,48 @@ Return JSON only.
 
         return normalized;
       }
-
-      console.warn(
-        "⚠️ AI router returned an invalid object."
-      );
     }
 
-    // ========================================================
-    // LOCAL FALLBACK
-    // ========================================================
+
+    /*
+    Fallback
+    */
 
     console.warn(
       "⚠️ Using local router fallback."
     );
 
     const fallback =
-      localFallbackRouter(message);
+      localFallbackRouter(
+        message
+      );
 
-    // ========================================================
-    // REMINDER EXTRACTION FALLBACK
-    // ========================================================
+
+    /*
+    Reminder extraction fallback
+    */
 
     if (
       fallback.intent ===
       "create_reminder"
     ) {
+
       try {
+
         const extractionResponse =
-          await client.chat.completions.create(
-            {
-              model: MODEL,
+          await client.chat.completions.create({
+            model:
+              MODEL,
 
-              temperature: 0,
+            temperature:
+              0,
 
-              messages: [
-                {
-                  role: "system",
+            messages: [
+              {
+                role:
+                  "system",
 
-                  content: `
+                content: `
 Extract a reminder from the user's message.
 
 Return ONLY JSON:
@@ -714,8 +836,7 @@ Return ONLY JSON:
   "recurring": false
 }
 
-If you cannot determine both the task and time,
-return:
+If you cannot determine both the task and time:
 
 {
   "intent": "unknown",
@@ -725,55 +846,53 @@ return:
   "recurring": false
 }
 `,
-                },
-
-                {
-                  role: "user",
-
-                  content:
-                    message.trim(),
-                },
-              ],
-
-              response_format: {
-                type: "json_object",
               },
-            }
-          );
+
+              {
+                role:
+                  "user",
+
+                content:
+                  message.trim(),
+              },
+            ],
+
+            response_format: {
+              type:
+                "json_object",
+            },
+          });
+
 
         const extractionContent =
           extractionResponse
             ?.choices?.[0]
             ?.message?.content;
 
-        console.log(
-          "🤖 AI reminder extraction response:",
-          extractionContent
-        );
 
         const extraction =
           parseAIJson(
             extractionContent
           );
 
+
         const normalizedExtraction =
           normalizeRouterResult(
             extraction
           );
 
+
         if (
           normalizedExtraction
         ) {
-          console.log(
-            "🧠 AI Reminder Extraction Result:",
-            normalizedExtraction
-          );
 
           return normalizedExtraction;
         }
+
       } catch (
         fallbackAIError
       ) {
+
         console.error(
           "❌ Reminder extraction failed:",
           fallbackAIError.message
@@ -781,10 +900,6 @@ return:
       }
     }
 
-    console.log(
-      "🧠 Local Router Result:",
-      fallback
-    );
 
     return fallback;
 
@@ -804,7 +919,7 @@ return:
 
 
 // ============================================================
-// CONVERSATION AI WITH MEMORY
+// CONVERSATION AI + USER MEMORY
 // ============================================================
 
 const generateConversationReply =
@@ -816,11 +931,12 @@ const generateConversationReply =
 
     try {
 
-      // ======================================================
-      // LOAD USER MEMORY
-      // ======================================================
+      let memoryContext =
+        "";
 
-      let memoryContext = "";
+      /*
+      Load MongoDB memory.
+      */
 
       if (phoneNumber) {
 
@@ -836,7 +952,9 @@ const generateConversationReply =
             phoneNumber
           );
 
-        } catch (memoryError) {
+        } catch (
+          memoryError
+        ) {
 
           console.error(
             "⚠️ Could not load user memory:",
@@ -848,10 +966,6 @@ const generateConversationReply =
         }
       }
 
-
-      // ======================================================
-      // COMBINE MEMORY + CONTEXT
-      // ======================================================
 
       const combinedContext = `
 USER MEMORY:
@@ -865,10 +979,6 @@ ${context || "No additional context available."}
 `;
 
 
-      // ======================================================
-      // AI PROMPT
-      // ======================================================
-
       const systemPrompt = `
 You are a friendly personal WhatsApp assistant.
 
@@ -876,53 +986,31 @@ You are not just a reminder bot.
 
 You are a personal assistant who knows the user over time.
 
-Use the user's memory and recent context to make your
-responses more personalized and natural.
+Use the user's memory and recent context to make responses
+more personalized and natural.
 
 IMPORTANT:
 
-- Do not mention that you are reading a memory database.
+- Do not mention the internal memory database.
 - Do not reveal internal memory structures.
-- Do not invent facts about the user.
-- Only use information provided in the memory/context.
+- Do not invent facts.
+- Only use information provided in memory/context.
 - If something is uncertain, don't pretend you know it.
 - Do not force every conversation into a reminder.
 
 Your responsibilities include:
 
 - casual conversation
-- helping the user think
 - answering questions
 - helping plan the day
 - understanding emotions
-- helping with productivity
-- remembering useful context
-- making personalized suggestions
+- productivity
+- personalized suggestions
 
-If the user refers to something with words like:
-
-"it"
-"that"
-"them"
-"same"
-"again"
-"tomorrow"
-"the project"
-"that thing"
-
-use recent conversation and stored memory to understand
-what they are referring to.
+If the user says "it", "that", "them", "the project", etc.,
+use recent context and memory to understand the reference.
 
 Do not sound robotic.
-
-Do not repeatedly say:
-"I am Reminder PA."
-
-If the user says something emotional, respond naturally.
-
-If the user says something exciting, acknowledge it.
-
-If the user asks a normal question, answer normally.
 
 Keep WhatsApp responses reasonably concise.
 
@@ -941,25 +1029,30 @@ CURRENT MESSAGE
 ${message}
 `;
 
-      // ======================================================
-      // OPENROUTER
-      // ======================================================
 
       const response =
         await client.chat.completions.create({
-          model: MODEL,
+          model:
+            MODEL,
 
-          temperature: 0.7,
+          temperature:
+            0.7,
 
           messages: [
             {
-              role: "system",
-              content: systemPrompt,
+              role:
+                "system",
+
+              content:
+                systemPrompt,
             },
 
             {
-              role: "user",
-              content: message,
+              role:
+                "user",
+
+              content:
+                message,
             },
           ],
         });
@@ -996,6 +1089,315 @@ ${message}
 
 
 // ============================================================
+// AUTOMATIC MEMORY EXTRACTION
+// ============================================================
+
+const extractMemory = async ({
+  message,
+  phoneNumber = null,
+}) => {
+
+  try {
+
+    if (
+      !message ||
+      !message.trim()
+    ) {
+
+      return {
+        shouldRemember:
+          false,
+
+        type:
+          null,
+
+        key:
+          null,
+
+        value:
+          null,
+      };
+    }
+
+
+    const systemPrompt = `
+You are the memory extraction system for a personal AI assistant.
+
+Determine whether the user's message contains information
+worth remembering for future conversations.
+
+Remember information that is:
+
+- personal
+- useful later
+- reasonably stable
+- explicitly stated or strongly implied
+
+Examples:
+
+"My favorite color is blue."
+
+"I usually go for a walk at 7 PM."
+
+"I prefer short reminders."
+
+"I don't like being reminded too early."
+
+These should NOT be remembered:
+
+"What's the weather?"
+
+"Tell me a joke."
+
+"Okay."
+
+"Haha 😂"
+
+"Thanks."
+
+Return ONLY JSON.
+
+If something should be remembered:
+
+{
+  "shouldRemember": true,
+  "type": "fact | preference | routine",
+  "key": "short_snake_case_key",
+  "value": "short description"
+}
+
+Otherwise:
+
+{
+  "shouldRemember": false,
+  "type": null,
+  "key": null,
+  "value": null
+}
+
+Do not invent information.
+
+Do not store temporary emotions unless they are clearly
+important or persistent.
+
+Do not store sensitive personal information.
+
+Return JSON only.
+`;
+
+
+    const response =
+      await client.chat.completions.create({
+        model:
+          MODEL,
+
+        temperature:
+          0,
+
+        messages: [
+          {
+            role:
+              "system",
+
+            content:
+              systemPrompt,
+          },
+
+          {
+            role:
+              "user",
+
+            content:
+              message.trim(),
+          },
+        ],
+
+        response_format: {
+          type:
+            "json_object",
+        },
+      });
+
+
+    const content =
+      response
+        ?.choices?.[0]
+        ?.message?.content;
+
+
+    console.log(
+      "🧠 Memory extractor raw response:",
+      content
+    );
+
+
+    const parsed =
+      parseAIJson(
+        content
+      );
+
+
+    if (!parsed) {
+
+      return {
+        shouldRemember:
+          false,
+
+        type:
+          null,
+
+        key:
+          null,
+
+        value:
+          null,
+      };
+    }
+
+
+    if (
+      parsed.shouldRemember !==
+      true
+    ) {
+
+      return {
+        shouldRemember:
+          false,
+
+        type:
+          null,
+
+        key:
+          null,
+
+        value:
+          null,
+      };
+    }
+
+
+    const allowedTypes = [
+      "fact",
+      "preference",
+      "routine",
+    ];
+
+
+    if (
+      !allowedTypes.includes(
+        parsed.type
+      )
+    ) {
+
+      return {
+        shouldRemember:
+          false,
+
+        type:
+          null,
+
+        key:
+          null,
+
+        value:
+          null,
+      };
+    }
+
+
+    if (
+      typeof parsed.key !==
+        "string" ||
+      !parsed.key.trim()
+    ) {
+
+      return {
+        shouldRemember:
+          false,
+
+        type:
+          null,
+
+        key:
+          null,
+
+        value:
+          null,
+      };
+    }
+
+
+    if (
+      typeof parsed.value !==
+        "string" ||
+      !parsed.value.trim()
+    ) {
+
+      return {
+        shouldRemember:
+          false,
+
+        type:
+          null,
+
+        key:
+          null,
+
+        value:
+          null,
+      };
+    }
+
+
+    const result = {
+      shouldRemember:
+        true,
+
+      type:
+        parsed.type,
+
+      key:
+        parsed.key.trim(),
+
+      value:
+        parsed.value.trim(),
+    };
+
+
+    console.log(
+      "🧠 Memory extraction result:",
+      result
+    );
+
+
+    return result;
+
+  } catch (error) {
+
+    console.error(
+      "❌ Memory extraction error:",
+      error.response?.data ||
+        error.message
+    );
+
+    return {
+      shouldRemember:
+        false,
+
+      type:
+        null,
+
+      key:
+        null,
+
+      value:
+        null,
+    };
+  }
+};
+
+
+// ============================================================
 // BACKWARD-COMPATIBLE ALIASES
 // ============================================================
 
@@ -1020,4 +1422,5 @@ module.exports = {
 
   generateConversationResponse,
 
+  extractMemory,
 };

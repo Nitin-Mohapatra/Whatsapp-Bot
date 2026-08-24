@@ -34,12 +34,6 @@ const getOrCreateUser = async (phoneNumber) => {
 |--------------------------------------------------------------------------
 | ADD RECENT CONTEXT
 |--------------------------------------------------------------------------
-|
-| We keep only a small amount of recent conversation here.
-|
-| The complete history is already stored in Message.
-|
-|--------------------------------------------------------------------------
 */
 
 const addRecentContext = async ({
@@ -51,7 +45,8 @@ const addRecentContext = async ({
     return null;
   }
 
-  const user = await getOrCreateUser(phoneNumber);
+  const user =
+    await getOrCreateUser(phoneNumber);
 
   user.recentContext.push({
     role,
@@ -60,7 +55,9 @@ const addRecentContext = async ({
   });
 
   /*
-  Keep only the latest 20 context entries.
+  Keep only the latest 20 messages.
+  Complete WhatsApp history is already stored
+  in the Message collection.
   */
 
   if (user.recentContext.length > 20) {
@@ -86,7 +83,8 @@ const getRecentContext = async (
   phoneNumber,
   limit = 10
 ) => {
-  const user = await getOrCreateUser(phoneNumber);
+  const user =
+    await getOrCreateUser(phoneNumber);
 
   return user.recentContext
     .slice(-limit)
@@ -111,17 +109,14 @@ const addImportantFact = async ({
     return null;
   }
 
-  const user = await getOrCreateUser(phoneNumber);
+  const user =
+    await getOrCreateUser(phoneNumber);
 
   const cleanFact = fact.trim();
 
   if (!cleanFact) {
     return user;
   }
-
-  /*
-  Prevent duplicate facts.
-  */
 
   const alreadyExists =
     user.importantFacts.some(
@@ -131,7 +126,9 @@ const addImportantFact = async ({
     );
 
   if (!alreadyExists) {
-    user.importantFacts.push(cleanFact);
+    user.importantFacts.push(
+      cleanFact
+    );
 
     await user.save();
 
@@ -150,26 +147,35 @@ const addImportantFact = async ({
 |--------------------------------------------------------------------------
 */
 
-const getUserMemory = async (phoneNumber) => {
-  const user = await getOrCreateUser(phoneNumber);
+const getUserMemory = async (
+  phoneNumber
+) => {
+  const user =
+    await getOrCreateUser(phoneNumber);
 
   return {
-    phoneNumber: user.phoneNumber,
+    phoneNumber:
+      user.phoneNumber,
 
-    profile: user.profile,
+    profile:
+      user.profile,
 
-    importantFacts: user.importantFacts,
+    importantFacts:
+      user.importantFacts,
 
-    preferences: user.preferences,
+    preferences:
+      user.preferences,
 
-    routines: user.routines,
+    routines:
+      user.routines,
 
-    recentContext: user.recentContext
-      .slice(-10)
-      .map((item) => ({
-        role: item.role,
-        content: item.content,
-      })),
+    recentContext:
+      user.recentContext
+        .slice(-10)
+        .map((item) => ({
+          role: item.role,
+          content: item.content,
+        })),
   };
 };
 
@@ -185,11 +191,16 @@ const setPreference = async ({
   key,
   value,
 }) => {
-  if (!phoneNumber || !key || !value) {
+  if (
+    !phoneNumber ||
+    !key ||
+    !value
+  ) {
     return null;
   }
 
-  const user = await getOrCreateUser(phoneNumber);
+  const user =
+    await getOrCreateUser(phoneNumber);
 
   const existingPreference =
     user.preferences.find(
@@ -199,7 +210,8 @@ const setPreference = async ({
     );
 
   if (existingPreference) {
-    existingPreference.value = value;
+    existingPreference.value =
+      value;
   } else {
     user.preferences.push({
       key,
@@ -228,14 +240,17 @@ const updateProfile = async ({
   name,
   timezone,
 }) => {
-  const user = await getOrCreateUser(phoneNumber);
+  const user =
+    await getOrCreateUser(phoneNumber);
 
   if (name) {
-    user.profile.name = name;
+    user.profile.name =
+      name;
   }
 
   if (timezone) {
-    user.profile.timezone = timezone;
+    user.profile.timezone =
+      timezone;
   }
 
   await user.save();
@@ -246,19 +261,22 @@ const updateProfile = async ({
 
 /*
 |--------------------------------------------------------------------------
-| FORMAT MEMORY FOR AI
-|--------------------------------------------------------------------------
-|
-| Converts MongoDB memory into a compact prompt section.
-|
+| BUILD MEMORY CONTEXT FOR AI
 |--------------------------------------------------------------------------
 */
 
-const buildMemoryContext = async (phoneNumber) => {
+const buildMemoryContext = async (
+  phoneNumber
+) => {
   const memory =
     await getUserMemory(phoneNumber);
 
   const sections = [];
+
+
+  /*
+  Profile
+  */
 
   if (memory.profile?.name) {
     sections.push(
@@ -266,21 +284,31 @@ const buildMemoryContext = async (phoneNumber) => {
     );
   }
 
-  if (
-    memory.profile?.timezone
-  ) {
+  if (memory.profile?.timezone) {
     sections.push(
       `Timezone: ${memory.profile.timezone}`
     );
   }
 
+
+  /*
+  Important facts
+  */
+
   if (
     memory.importantFacts?.length
   ) {
     sections.push(
-      `Important facts:\n- ${memory.importantFacts.join("\n- ")}`
+      `Important facts:\n- ${memory.importantFacts.join(
+        "\n- "
+      )}`
     );
   }
+
+
+  /*
+  Preferences
+  */
 
   if (
     memory.preferences?.length
@@ -295,6 +323,11 @@ const buildMemoryContext = async (phoneNumber) => {
     );
   }
 
+
+  /*
+  Routines
+  */
+
   if (
     memory.routines?.length
   ) {
@@ -303,12 +336,18 @@ const buildMemoryContext = async (phoneNumber) => {
         .map(
           (routine) =>
             `${routine.name} at ${
-              routine.time || "unspecified time"
+              routine.time ||
+              "unspecified time"
             }`
         )
         .join("\n- ")}`
     );
   }
+
+
+  /*
+  Recent conversation
+  */
 
   if (
     memory.recentContext?.length
@@ -323,11 +362,117 @@ const buildMemoryContext = async (phoneNumber) => {
     );
   }
 
+
   if (!sections.length) {
     return "No stored memory about this user yet.";
   }
 
   return sections.join("\n\n");
+};
+
+
+/*
+|--------------------------------------------------------------------------
+| SAVE EXTRACTED MEMORY
+|--------------------------------------------------------------------------
+*/
+
+const saveExtractedMemory = async ({
+  phoneNumber,
+  memory,
+}) => {
+  if (
+    !phoneNumber ||
+    !memory
+  ) {
+    return null;
+  }
+
+  if (
+    memory.shouldRemember !== true
+  ) {
+    return null;
+  }
+
+  const {
+    type,
+    key,
+    value,
+  } = memory;
+
+  if (
+    !type ||
+    !key ||
+    !value
+  ) {
+    return null;
+  }
+
+
+  /*
+  FACT
+  */
+
+  if (type === "fact") {
+    return await addImportantFact({
+      phoneNumber,
+      fact: `${key}: ${value}`,
+    });
+  }
+
+
+  /*
+  PREFERENCE
+  */
+
+  if (type === "preference") {
+    return await setPreference({
+      phoneNumber,
+      key,
+      value,
+    });
+  }
+
+
+  /*
+  ROUTINE
+  */
+
+  if (type === "routine") {
+    const user =
+      await getOrCreateUser(
+        phoneNumber
+      );
+
+    const existingRoutine =
+      user.routines.find(
+        (routine) =>
+          routine.name.toLowerCase() ===
+          key.toLowerCase()
+      );
+
+    if (existingRoutine) {
+      existingRoutine.time =
+        value;
+    } else {
+      user.routines.push({
+        name: key,
+        time: value,
+        days: [],
+        enabled: true,
+      });
+    }
+
+    await user.save();
+
+    console.log(
+      `🧠 Routine saved for ${phoneNumber}: ${key} = ${value}`
+    );
+
+    return user;
+  }
+
+  return null;
 };
 
 
@@ -346,4 +491,5 @@ module.exports = {
   setPreference,
   updateProfile,
   buildMemoryContext,
+  saveExtractedMemory,
 };
