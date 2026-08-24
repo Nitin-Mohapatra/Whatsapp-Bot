@@ -304,7 +304,45 @@ const callStructuredAI = async ({
         // ----------------------------------------------------
 
         response_format: {
-          type: "json_object",
+          type: "json_schema",
+          json_schema: {
+            name: "assistant_router",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                intent: {
+                  type: "string",
+                  enum: [
+                    "create_reminder",
+                    "acknowledge_reminder",
+                    "conversation",
+                    "unknown"
+                  ]
+                },
+                confidence: {
+                  type: "number"
+                },
+                task: {
+                  type: ["string", "null"]
+                },
+                timeText: {
+                  type: ["string", "null"]
+                },
+                recurring: {
+                  type: "boolean"
+                }
+              },
+              required: [
+                "intent",
+                "confidence",
+                "task",
+                "timeText",
+                "recurring"
+              ],
+              additionalProperties: false
+            }
+          }
         },
 
         // Keep router responses small
