@@ -6,6 +6,7 @@ let jsonrepair = null;
 
 try {
   const repairModule = require("jsonrepair");
+
   jsonrepair =
     repairModule.jsonrepair ||
     repairModule.default ||
@@ -16,19 +17,22 @@ try {
   );
 }
 
+// ============================================================
+// OPENROUTER CLIENT
+// ============================================================
+
 const client = new OpenAI({
   apiKey: process.env.OPENROUTER_API_KEY,
   baseURL: "https://openrouter.ai/api/v1",
 });
 
 const MODEL =
-  process.env.OPENROUTER_MODEL || "openai/gpt-oss-20b:free";
+  process.env.OPENROUTER_MODEL ||
+  "openai/gpt-oss-20b:free";
 
-/*
-|--------------------------------------------------------------------------
-| DEFAULT ROUTER RESULT
-|--------------------------------------------------------------------------
-*/
+// ============================================================
+// DEFAULT ROUTER RESULT
+// ============================================================
 
 const defaultRouterResult = {
   intent: "conversation",
@@ -38,18 +42,16 @@ const defaultRouterResult = {
   recurring: false,
 };
 
-/*
-|--------------------------------------------------------------------------
-| NORMALIZE ROUTER RESULT
-|--------------------------------------------------------------------------
-|
-| Makes sure whatever the AI returns is converted into the exact
-| structure our application expects.
-|
-*/
+// ============================================================
+// NORMALIZE ROUTER RESULT
+// ============================================================
 
 const normalizeRouterResult = (result) => {
-  if (!result || typeof result !== "object" || Array.isArray(result)) {
+  if (
+    !result ||
+    typeof result !== "object" ||
+    Array.isArray(result)
+  ) {
     return null;
   }
 
@@ -76,14 +78,19 @@ const normalizeRouterResult = (result) => {
     confidence = 0.5;
   }
 
-  confidence = Math.max(0, Math.min(1, confidence));
+  confidence = Math.max(
+    0,
+    Math.min(1, confidence)
+  );
 
   return {
     intent,
+
     confidence,
 
     task:
-      typeof result.task === "string" && result.task.trim()
+      typeof result.task === "string" &&
+      result.task.trim()
         ? result.task.trim()
         : null,
 
@@ -97,26 +104,24 @@ const normalizeRouterResult = (result) => {
   };
 };
 
-/*
-|--------------------------------------------------------------------------
-| LOCAL ACKNOWLEDGMENT DETECTION
-|--------------------------------------------------------------------------
-|
-| This is intentionally done BEFORE calling the AI.
-|
-| Examples:
-|
-| done
-| Done
-| okay
-| ok
-| yes
-| 👍
-| 👍🏻
-| completed
-|
-|--------------------------------------------------------------------------
-*/
+// ============================================================
+// ACKNOWLEDGMENT DETECTION
+// ============================================================
+//
+// These messages should immediately acknowledge the latest
+// reminder without needing AI.
+//
+// Examples:
+//
+// done
+// okay
+// ok
+// yes
+// completed
+// 👍
+// 👌
+//
+// ============================================================
 
 const isAcknowledgmentMessage = (message) => {
   if (!message) {
@@ -148,12 +153,14 @@ const isAcknowledgmentMessage = (message) => {
     "all done",
     "task done",
     "work done",
+
     "👍",
     "👍🏻",
     "👍🏼",
     "👍🏽",
     "👍🏾",
     "👍🏿",
+
     "👌",
     "👌🏻",
     "👌🏼",
@@ -162,31 +169,23 @@ const isAcknowledgmentMessage = (message) => {
     "👌🏿",
   ];
 
-  return acknowledgmentPatterns.includes(normalized);
+  return acknowledgmentPatterns.includes(
+    normalized
+  );
 };
 
-/*
-|--------------------------------------------------------------------------
-| LOCAL REMINDER DETECTION
-|--------------------------------------------------------------------------
-|
-| This is a safety net.
-|
-| If the AI provider returns something like:
-|
-| "User Safety: safe"
-|
-| instead of JSON, we can still recognize obvious reminder requests.
-|
-|--------------------------------------------------------------------------
-*/
+// ============================================================
+// LOCAL REMINDER DETECTION
+// ============================================================
 
 const looksLikeReminder = (message) => {
   if (!message) {
     return false;
   }
 
-  const text = message.toLowerCase().trim();
+  const text = message
+    .toLowerCase()
+    .trim();
 
   const reminderPatterns = [
     /\bremind me\b/,
@@ -195,14 +194,14 @@ const looksLikeReminder = (message) => {
     /\bremember to\b/,
   ];
 
-  return reminderPatterns.some((pattern) => pattern.test(text));
+  return reminderPatterns.some(
+    (pattern) => pattern.test(text)
+  );
 };
 
-/*
-|--------------------------------------------------------------------------
-| EXTRACT JSON FROM AI RESPONSE
-|--------------------------------------------------------------------------
-*/
+// ============================================================
+// EXTRACT JSON FROM AI RESPONSE
+// ============================================================
 
 const extractJsonCandidate = (content) => {
   if (!content || typeof content !== "string") {
@@ -211,9 +210,7 @@ const extractJsonCandidate = (content) => {
 
   let cleaned = content.trim();
 
-  /*
-  Remove markdown code fences.
-  */
+  // Remove markdown code fences.
 
   cleaned = cleaned
     .replace(/^```json\s*/i, "")
@@ -221,47 +218,52 @@ const extractJsonCandidate = (content) => {
     .replace(/\s*```$/i, "")
     .trim();
 
-  /*
-  Sometimes models return:
+  // Find JSON object inside surrounding text.
 
-  Here is the JSON:
-  {
-     ...
-  }
-  */
+  const firstBrace =
+    cleaned.indexOf("{");
 
-  const firstBrace = cleaned.indexOf("{");
-  const lastBrace = cleaned.lastIndexOf("}");
+  const lastBrace =
+    cleaned.lastIndexOf("}");
 
-  if (firstBrace !== -1 && lastBrace !== -1) {
-    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  if (
+    firstBrace !== -1 &&
+    lastBrace !== -1 &&
+    lastBrace > firstBrace
+  ) {
+    cleaned = cleaned.slice(
+      firstBrace,
+      lastBrace + 1
+    );
   }
 
   return cleaned;
 };
 
-/*
-|--------------------------------------------------------------------------
-| PARSE AI JSON SAFELY
-|--------------------------------------------------------------------------
-*/
+// ============================================================
+// PARSE AI JSON SAFELY
+// ============================================================
 
 const parseAIJson = (content) => {
-  if (!content || typeof content !== "string") {
+  if (
+    !content ||
+    typeof content !== "string"
+  ) {
     return null;
   }
 
   const raw = content.trim();
 
-  /*
-  IMPORTANT:
-  Do not allow model safety text to become a valid JSON string.
-  */
+  // Prevent safety-classifier text from being treated as JSON.
 
   if (
-    raw.toLowerCase().includes("user safety") ||
+    raw
+      .toLowerCase()
+      .includes("user safety") ||
     raw.toLowerCase() === "safe" ||
-    raw.toLowerCase().includes("safety: safe")
+    raw
+      .toLowerCase()
+      .includes("safety: safe")
   ) {
     console.warn(
       "⚠️ AI returned safety text instead of router JSON."
@@ -270,36 +272,40 @@ const parseAIJson = (content) => {
     return null;
   }
 
-  const candidate = extractJsonCandidate(raw);
+  const candidate =
+    extractJsonCandidate(raw);
 
   if (!candidate) {
     return null;
   }
 
-  /*
-  First attempt: normal JSON.parse
-  */
+  // ----------------------------------------
+  // NORMAL JSON PARSE
+  // ----------------------------------------
 
   try {
-    const parsed = JSON.parse(candidate);
-
-    return parsed;
+    return JSON.parse(candidate);
   } catch (error) {
     console.warn(
       "⚠️ Normal JSON.parse failed. Trying jsonrepair..."
     );
   }
 
-  /*
-  Second attempt: jsonrepair
-  */
+  // ----------------------------------------
+  // JSONREPAIR FALLBACK
+  // ----------------------------------------
 
   if (jsonrepair) {
     try {
-      const repaired = jsonrepair(candidate);
-      const parsed = JSON.parse(repaired);
+      const repaired =
+        jsonrepair(candidate);
 
-      console.log("🔧 AI repaired JSON successfully.");
+      const parsed =
+        JSON.parse(repaired);
+
+      console.log(
+        "🔧 AI repaired JSON successfully."
+      );
 
       return parsed;
     } catch (error) {
@@ -313,113 +319,136 @@ const parseAIJson = (content) => {
   return null;
 };
 
-/*
-|--------------------------------------------------------------------------
-| LOCAL FALLBACK ROUTER
-|--------------------------------------------------------------------------
-|
-| Used when the AI provider returns invalid output.
-|
-|--------------------------------------------------------------------------
-*/
+// ============================================================
+// LOCAL FALLBACK ROUTER
+// ============================================================
 
-const localFallbackRouter = (message) => {
-  /*
-  Empty message
-  */
+const localFallbackRouter = (
+  message
+) => {
+  // Empty message
 
-  if (!message || !message.trim()) {
+  if (
+    !message ||
+    !message.trim()
+  ) {
     return {
       ...defaultRouterResult,
+
       intent: "unknown",
+
       confidence: 1,
     };
   }
 
-  /*
-  Acknowledgment
-  */
+  // Acknowledgment
 
-  if (isAcknowledgmentMessage(message)) {
+  if (
+    isAcknowledgmentMessage(message)
+  ) {
     return {
-      intent: "acknowledge_reminder",
+      intent:
+        "acknowledge_reminder",
+
       confidence: 1,
+
       task: null,
+
       timeText: null,
+
       recurring: false,
     };
   }
 
-  /*
-  Obvious reminder request
-  */
+  // Obvious reminder
 
-  if (looksLikeReminder(message)) {
+  if (
+    looksLikeReminder(message)
+  ) {
     return {
       intent: "create_reminder",
+
       confidence: 0.85,
+
       task: null,
+
       timeText: null,
+
       recurring: false,
     };
   }
 
-  /*
-  Otherwise conversation.
-  */
+  // Otherwise conversation
 
   return {
     intent: "conversation",
+
     confidence: 0.7,
+
     task: null,
+
     timeText: null,
+
     recurring: false,
   };
 };
 
-/*
-|--------------------------------------------------------------------------
-| AI ROUTER
-|--------------------------------------------------------------------------
-*/
+// ============================================================
+// AI ROUTER
+// ============================================================
 
-const parseReminder = async (message) => {
+const parseReminder = async (
+  message
+) => {
   try {
-    if (!message || !message.trim()) {
+    if (
+      !message ||
+      !message.trim()
+    ) {
       return {
         intent: "unknown",
+
         confidence: 1,
+
         task: null,
+
         timeText: null,
+
         recurring: false,
       };
     }
 
-    /*
-    --------------------------------------------------------------
-    FAST LOCAL CHECK
-    --------------------------------------------------------------
-    */
+    // ========================================================
+    // FAST LOCAL ACKNOWLEDGMENT
+    // ========================================================
 
-    if (isAcknowledgmentMessage(message)) {
+    if (
+      isAcknowledgmentMessage(message)
+    ) {
       const result = {
-        intent: "acknowledge_reminder",
+        intent:
+          "acknowledge_reminder",
+
         confidence: 1,
+
         task: null,
+
         timeText: null,
+
         recurring: false,
       };
 
-      console.log("🧠 Local AI Router Result:", result);
+      console.log(
+        "🧠 Local AI Router Result:",
+        result
+      );
 
       return result;
     }
 
-    /*
-    --------------------------------------------------------------
-    AI ROUTER PROMPT
-    --------------------------------------------------------------
-    */
+    // ========================================================
+    // AI ROUTER PROMPT
+    // ========================================================
 
     const systemPrompt = `
 You are the central AI router for a personal WhatsApp assistant.
@@ -447,14 +476,6 @@ Allowed intents:
 
 2. acknowledge_reminder
    The user is acknowledging/completing a reminder.
-   Examples:
-   "done"
-   "okay"
-   "ok"
-   "yes"
-   "👍"
-   "completed"
-   "finished"
 
 3. conversation
    The user is simply talking to the assistant.
@@ -585,82 +606,80 @@ Do not include the words "remind me" in task.
 Return JSON only.
 `;
 
-    /*
-    --------------------------------------------------------------
-    CALL OPENROUTER
-    --------------------------------------------------------------
-    */
+    // ========================================================
+    // CALL OPENROUTER
+    // ========================================================
 
     let response;
 
     try {
-      response = await client.chat.completions.create({
-        model: MODEL,
+      response =
+        await client.chat.completions.create({
+          model: MODEL,
 
-        temperature: 0,
+          temperature: 0,
 
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt,
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt,
+            },
+            {
+              role: "user",
+              content: message.trim(),
+            },
+          ],
+
+          response_format: {
+            type: "json_object",
           },
-          {
-            role: "user",
-            content: message.trim(),
-          },
-        ],
-
-        /*
-        Ask the model for JSON.
-        */
-
-        response_format: {
-          type: "json_object",
-        },
-      });
+        });
     } catch (structuredError) {
-      /*
-      Some models/providers may reject response_format.
-      Retry without it.
-      */
-
       console.warn(
         "⚠️ Structured JSON request failed. Retrying without response_format..."
       );
 
-      response = await client.chat.completions.create({
-        model: MODEL,
+      response =
+        await client.chat.completions.create({
+          model: MODEL,
 
-        temperature: 0,
+          temperature: 0,
 
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt,
-          },
-          {
-            role: "user",
-            content: message.trim(),
-          },
-        ],
-      });
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt,
+            },
+            {
+              role: "user",
+              content: message.trim(),
+            },
+          ],
+        });
     }
 
     const content =
-      response?.choices?.[0]?.message?.content;
+      response
+        ?.choices?.[0]
+        ?.message?.content;
 
-    console.log("🤖 AI raw response:", content);
+    console.log(
+      "🤖 AI raw response:",
+      content
+    );
 
-    /*
-    --------------------------------------------------------------
-    PARSE RESPONSE
-    --------------------------------------------------------------
-    */
+    // ========================================================
+    // PARSE RESPONSE
+    // ========================================================
 
-    const parsed = parseAIJson(content);
+    const parsed =
+      parseAIJson(content);
 
     if (parsed) {
-      const normalized = normalizeRouterResult(parsed);
+      const normalized =
+        normalizeRouterResult(
+          parsed
+        );
 
       if (normalized) {
         console.log(
@@ -676,41 +695,38 @@ Return JSON only.
       );
     }
 
-    /*
-    --------------------------------------------------------------
-    FALLBACK
-    --------------------------------------------------------------
-    */
+    // ========================================================
+    // LOCAL FALLBACK
+    // ========================================================
 
     console.warn(
       "⚠️ Using local router fallback."
     );
 
-    const fallback = localFallbackRouter(message);
+    const fallback =
+      localFallbackRouter(message);
 
-    /*
-    If it looks like a reminder but AI failed,
-    we don't want the pipeline to create a reminder
-    without task/time information.
-
-    Therefore we ask the model one more time using
-    a very small extraction prompt.
-    */
+    // ========================================================
+    // REMINDER EXTRACTION FALLBACK
+    // ========================================================
 
     if (
-      fallback.intent === "create_reminder"
+      fallback.intent ===
+      "create_reminder"
     ) {
       try {
         const extractionResponse =
-          await client.chat.completions.create({
-            model: MODEL,
+          await client.chat.completions.create(
+            {
+              model: MODEL,
 
-            temperature: 0,
+              temperature: 0,
 
-            messages: [
-              {
-                role: "system",
-                content: `
+              messages: [
+                {
+                  role: "system",
+
+                  content: `
 Extract a reminder from the user's message.
 
 Return ONLY JSON:
@@ -734,20 +750,26 @@ return:
   "recurring": false
 }
 `,
-              },
-              {
-                role: "user",
-                content: message.trim(),
-              },
-            ],
+                },
 
-            response_format: {
-              type: "json_object",
-            },
-          });
+                {
+                  role: "user",
+
+                  content:
+                    message.trim(),
+                },
+              ],
+
+              response_format: {
+                type: "json_object",
+              },
+            }
+          );
 
         const extractionContent =
-          extractionResponse?.choices?.[0]?.message?.content;
+          extractionResponse
+            ?.choices?.[0]
+            ?.message?.content;
 
         console.log(
           "🤖 AI reminder extraction response:",
@@ -755,12 +777,18 @@ return:
         );
 
         const extraction =
-          parseAIJson(extractionContent);
+          parseAIJson(
+            extractionContent
+          );
 
         const normalizedExtraction =
-          normalizeRouterResult(extraction);
+          normalizeRouterResult(
+            extraction
+          );
 
-        if (normalizedExtraction) {
+        if (
+          normalizedExtraction
+        ) {
           console.log(
             "🧠 AI Reminder Extraction Result:",
             normalizedExtraction
@@ -768,7 +796,9 @@ return:
 
           return normalizedExtraction;
         }
-      } catch (fallbackAIError) {
+      } catch (
+        fallbackAIError
+      ) {
         console.error(
           "❌ Reminder extraction failed:",
           fallbackAIError.message
@@ -785,40 +815,27 @@ return:
   } catch (error) {
     console.error(
       "❌ OpenRouter error:",
-      error.response?.data || error.message
+      error.response?.data ||
+        error.message
     );
 
-    /*
-    Do NOT crash the WhatsApp webhook just because
-    AI failed.
-
-    Return a safe local classification.
-    */
-
-    return localFallbackRouter(message);
+    return localFallbackRouter(
+      message
+    );
   }
 };
 
-/*
-|--------------------------------------------------------------------------
-| CONVERSATION AI
-|--------------------------------------------------------------------------
-|
-| This is used when router intent = conversation.
-|
-| We keep this separate from parseReminder because the reminder
-| pipeline needs structured data while normal conversation needs
-| natural language.
-|
-|--------------------------------------------------------------------------
-*/
+// ============================================================
+// CONVERSATION AI
+// ============================================================
 
-const generateConversationReply = async ({
-  message,
-  context = "",
-}) => {
-  try {
-    const systemPrompt = `
+const generateConversationReply =
+  async ({
+    message,
+    context = "",
+  }) => {
+    try {
+      const systemPrompt = `
 You are a friendly personal WhatsApp assistant.
 
 You are not just a reminder bot.
@@ -860,55 +877,91 @@ Previous context:
 ${context || "No previous context available."}
 `;
 
-    const response =
-      await client.chat.completions.create({
-        model: MODEL,
-
-        temperature: 0.7,
-
-        messages: [
+      const response =
+        await client.chat.completions.create(
           {
-            role: "system",
-            content: systemPrompt,
-          },
-          {
-            role: "user",
-            content: message,
-          },
-        ],
-      });
+            model: MODEL,
 
-    const reply =
-      response?.choices?.[0]?.message?.content;
+            temperature: 0.7,
 
-    if (!reply || !reply.trim()) {
-      return "I'm here. Tell me what's on your mind. 😊";
+            messages: [
+              {
+                role: "system",
+                content:
+                  systemPrompt,
+              },
+
+              {
+                role: "user",
+                content: message,
+              },
+            ],
+          }
+        );
+
+      const reply =
+        response
+          ?.choices?.[0]
+          ?.message?.content;
+
+      if (
+        !reply ||
+        !reply.trim()
+      ) {
+        return "I'm here. Tell me what's on your mind. 😊";
+      }
+
+      return reply.trim();
+    } catch (error) {
+      console.error(
+        "❌ Conversation AI error:",
+        error.response?.data ||
+          error.message
+      );
+
+      return "I'm here with you. Tell me what you need help with. 😊";
     }
+  };
 
-    return reply.trim();
-  } catch (error) {
-    console.error(
-      "❌ Conversation AI error:",
-      error.response?.data || error.message
-    );
+// ============================================================
+// BACKWARD-COMPATIBLE ALIASES
+// ============================================================
+//
+// Your existing controllers use:
+//
+// analyzeMessage()
+// generateConversationResponse()
+//
+// Your reminder pipeline uses:
+//
+// parseReminder()
+// generateConversationReply()
+//
+// Keep all four names available so we don't have to change
+// multiple files.
+//
+// ============================================================
 
-    return "I'm here with you. Tell me what you need help with. 😊";
-  }
-};
+const analyzeMessage =
+  parseReminder;
 
-/*
-|--------------------------------------------------------------------------
-| BACKWARD COMPATIBILITY
-|--------------------------------------------------------------------------
-|
-| Existing code imports parseReminder().
-|
-| We keep the same export.
-|
-|--------------------------------------------------------------------------
-*/
+const generateConversationResponse =
+  generateConversationReply;
+
+// ============================================================
+// EXPORTS
+// ============================================================
 
 module.exports = {
+  // Main router
   parseReminder,
+
+  // Controller compatibility
+  analyzeMessage,
+
+  // Main conversation function
   generateConversationReply,
+
+  // Controller compatibility
+  generateConversationResponse,
 };
