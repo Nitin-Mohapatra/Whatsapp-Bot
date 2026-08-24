@@ -1,3 +1,6 @@
+const axios = require("axios");
+const FormData = require("form-data");
+
 const Message = require("../models/message.model");
 
 const {
@@ -25,6 +28,273 @@ const {
   getRecentContext,
   buildMemoryContext,
 } = require("../services/memory.service");
+
+
+// ======================================================
+// SARVAM SPEECH TO TEXT
+// ======================================================
+
+const transcribeAudioWithSarvam = async ({
+  audioBuffer,
+  mimeType,
+  fileName,
+}) => {
+
+  try {
+
+    console.log("🎙️ Sending audio to Sarvam STT...");
+
+    if (!process.env.SARVAM_API_KEY) {
+      throw new Error(
+        "SARVAM_API_KEY is not configured"
+      );
+    }
+
+    const formData = new FormData();
+
+    formData.append(
+      "file",
+      audioBuffer,
+      {
+        filename:
+          fileName || "whatsapp-audio.ogg",
+
+        contentType:
+          mimeType || "audio/ogg",
+      }
+    );
+
+    // Saaras v3
+    formData.append(
+      "model",
+      process.env.SARVAM_STT_MODEL ||
+      "saaras:v3"
+    );
+
+    // Automatically detect language.
+    formData.append(
+      "language_code",
+      process.env.SARVAM_LANGUAGE_CODE ||
+      "unknown"
+    );
+
+    // Keep original language/code-mixed speech.
+    formData.append(
+      "mode",
+      process.env.SARVAM_STT_MODE ||
+      "transcribe"
+    );
+
+    const response =
+      await axios.post(
+        "https://api.sarvam.ai/speech-to-text",
+        formData,
+        {
+          headers: {
+            ...formData.getHeaders(),
+
+            "api-subscription-key":
+              process.env.SARVAM_API_KEY,
+          },
+
+          maxBodyLength:
+            Infinity,
+
+          maxContentLength:
+            Infinity,
+
+          timeout:
+            60000,
+        }
+      );
+
+
+    console.log(
+      "🎙️ Sarvam STT response:",
+      response.data
+    );
+
+
+    const transcript =
+      response.data?.transcript?.trim();
+
+
+    if (!transcript) {
+
+      throw new Error(
+        "Sarvam returned an empty transcript"
+      );
+    }
+
+
+    console.log(
+      "📝 Voice transcript:",
+      transcript
+    );
+
+
+    console.log(
+      "🌐 Detected language:",
+      response.data?.language_code
+    );
+
+
+    return {
+      transcript,
+
+      languageCode:
+        response.data?.language_code ||
+        null,
+
+      requestId:
+        response.data?.request_id ||
+        null,
+    };
+
+  } catch (error) {
+
+    console.error(
+      "❌ Sarvam STT error:",
+      error.response?.data ||
+      error.message
+    );
+
+    throw new Error(
+      "Failed to transcribe WhatsApp voice message"
+    );
+  }
+};
+
+
+// ======================================================
+// DOWNLOAD WHATSAPP MEDIA
+// ======================================================
+
+const downloadWhatsAppMedia = async (
+  mediaId
+) => {
+
+  try {
+
+    console.log(
+      "🎧 Getting WhatsApp media URL:",
+      mediaId
+    );
+
+
+    if (!process.env.WHATSAPP_ACCESS_TOKEN) {
+
+      throw new Error(
+        "WHATSAPP_ACCESS_TOKEN is not configured"
+      );
+    }
+
+
+    // --------------------------------------------------
+    // STEP 1
+    // Ask Meta for the actual media URL
+    // --------------------------------------------------
+
+    const mediaResponse =
+      await axios.get(
+        `https://graph.facebook.com/v23.0/${mediaId}`,
+        {
+          headers: {
+            Authorization:
+              `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+          },
+
+          timeout:
+            30000,
+        }
+      );
+
+
+    const mediaUrl =
+      mediaResponse.data?.url;
+
+
+    const mimeType =
+      mediaResponse.data?.mime_type ||
+      "audio/ogg";
+
+
+    if (!mediaUrl) {
+
+      throw new Error(
+        "WhatsApp did not return a media URL"
+      );
+    }
+
+
+    console.log(
+      "🔗 WhatsApp media URL received"
+    );
+
+    console.log(
+      "🎵 MIME type:",
+      mimeType
+    );
+
+
+    // --------------------------------------------------
+    // STEP 2
+    // Download actual audio file
+    // --------------------------------------------------
+
+    const audioResponse =
+      await axios.get(
+        mediaUrl,
+        {
+          headers: {
+            Authorization:
+              `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+          },
+
+          responseType:
+            "arraybuffer",
+
+          timeout:
+            30000,
+        }
+      );
+
+
+    const audioBuffer =
+      Buffer.from(
+        audioResponse.data
+      );
+
+
+    console.log(
+      "✅ WhatsApp audio downloaded:",
+      audioBuffer.length,
+      "bytes"
+    );
+
+
+    return {
+      audioBuffer,
+
+      mimeType,
+
+      fileName:
+        `whatsapp-${mediaId}.ogg`,
+    };
+
+  } catch (error) {
+
+    console.error(
+      "❌ WhatsApp media download failed:",
+      error.response?.data ||
+      error.message
+    );
+
+    throw new Error(
+      "Failed to download WhatsApp voice message"
+    );
+  }
+};
 
 
 // ========================================
@@ -163,67 +433,9 @@ const receiveWebhook =
       const messageType =
         message.type;
 
-      let text = "";
-
 
       // ========================================
-      // TEXT MESSAGE
-      // ========================================
-
-      if (
-        messageType === "text"
-      ) {
-
-        text =
-          message.text?.body ||
-          "";
-      }
-
-
-      console.log(
-        "From:",
-        from
-      );
-
-      console.log(
-        "Message type:",
-        messageType
-      );
-
-      console.log(
-        "Message:",
-        text
-      );
-
-
-      // ========================================
-      // CURRENT PROTOTYPE SUPPORTS TEXT
-      // ========================================
-
-      if (
-        !text.trim()
-      ) {
-
-        console.log(
-          `Message type "${messageType}" does not contain text yet`
-        );
-
-
-        await sendWhatsAppMessage(
-          from,
-
-          "I can currently understand text messages. Voice-message support is coming soon 🎙️"
-        );
-
-
-        return res.sendStatus(
-          200
-        );
-      }
-
-
-      // ========================================
-      // PREVENT DUPLICATE PROCESSING
+      // DUPLICATE CHECK
       // ========================================
 
       const existingMessage =
@@ -249,10 +461,231 @@ const receiveWebhook =
 
 
       // ========================================
+      // TEXT WILL EVENTUALLY CONTAIN:
+      //
+      // TEXT MESSAGE
+      //      ↓
+      // message.text.body
+      //
+      // VOICE MESSAGE
+      //      ↓
+      // WhatsApp media
+      //      ↓
+      // Sarvam
+      //      ↓
+      // transcript
+      // ========================================
+
+      let text = "";
+
+      let voiceLanguage = null;
+
+      let voiceRequestId = null;
+
+
+      // ========================================
+      // TEXT MESSAGE
+      // ========================================
+
+      if (
+        messageType === "text"
+      ) {
+
+        text =
+          message.text?.body ||
+          "";
+      }
+
+
+      // ========================================
+      // AUDIO / VOICE MESSAGE
+      // ========================================
+
+      else if (
+        messageType === "audio"
+      ) {
+
+        console.log(
+          "🎙️ WhatsApp voice message received"
+        );
+
+
+        const mediaId =
+          message.audio?.id;
+
+
+        if (!mediaId) {
+
+          console.error(
+            "❌ Voice message does not contain media ID"
+          );
+
+
+          await sendWhatsAppMessage(
+            from,
+
+            "Sorry, I couldn't access that voice message. Please try sending it again."
+          );
+
+
+          return res.sendStatus(
+            200
+          );
+        }
+
+
+        // ----------------------------------------
+        // DOWNLOAD AUDIO FROM WHATSAPP
+        // ----------------------------------------
+
+        const {
+          audioBuffer,
+          mimeType,
+          fileName,
+        } =
+          await downloadWhatsAppMedia(
+            mediaId
+          );
+
+
+        // ----------------------------------------
+        // SEND AUDIO TO SARVAM
+        // ----------------------------------------
+
+        const transcription =
+          await transcribeAudioWithSarvam({
+            audioBuffer,
+
+            mimeType,
+
+            fileName,
+          });
+
+
+        text =
+          transcription.transcript;
+
+        voiceLanguage =
+          transcription.languageCode;
+
+        voiceRequestId =
+          transcription.requestId;
+
+
+        console.log(
+          "🗣️ Transcribed voice:",
+          text
+        );
+
+
+        // ----------------------------------------
+        // If Sarvam understood nothing
+        // ----------------------------------------
+
+        if (
+          !text ||
+          !text.trim()
+        ) {
+
+          await sendWhatsAppMessage(
+            from,
+
+            "I couldn't understand the voice message. Could you please say that again? 🎙️"
+          );
+
+
+          return res.sendStatus(
+            200
+          );
+        }
+
+
+        console.log(
+          "🎙️ Voice successfully converted to text"
+        );
+      }
+
+
+      // ========================================
+      // OTHER MESSAGE TYPES
+      // ========================================
+
+      else {
+
+        console.log(
+          `Message type "${messageType}" is not supported yet`
+        );
+
+
+        await sendWhatsAppMessage(
+          from,
+
+          "I can currently understand text and voice messages. 😊"
+        );
+
+
+        return res.sendStatus(
+          200
+        );
+      }
+
+
+      console.log(
+        "From:",
+        from
+      );
+
+      console.log(
+        "Message type:",
+        messageType
+      );
+
+      console.log(
+        "Message:",
+        text
+      );
+
+
+      // ========================================
+      // FINAL TEXT SAFETY CHECK
+      // ========================================
+
+      if (
+        !text.trim()
+      ) {
+
+        console.log(
+          "No usable text after processing"
+        );
+
+
+        await sendWhatsAppMessage(
+          from,
+
+          "I couldn't understand that message. Could you try again? 😊"
+        );
+
+
+        return res.sendStatus(
+          200
+        );
+      }
+
+
+      // ========================================
       // SAVE INCOMING MESSAGE
+      //
+      // IMPORTANT:
+      //
+      // For voice messages, `text` contains
+      // the Sarvam transcript.
+      //
+      // So the rest of the system does NOT
+      // need a separate voice pipeline.
       // ========================================
 
       await Message.create({
+
         whatsappMessageId:
           messageId,
 
@@ -288,6 +721,7 @@ const receiveWebhook =
       try {
 
         await addRecentContext({
+
           phoneNumber:
             from,
 
@@ -296,16 +730,12 @@ const receiveWebhook =
 
           content:
             text,
+
         });
 
       } catch (
       memoryError
       ) {
-
-        /*
-        Memory failure should NEVER
-        stop the WhatsApp message flow.
-        */
 
         console.error(
           "⚠️ Failed to save recent user context:",
@@ -316,9 +746,8 @@ const receiveWebhook =
 
       // ========================================
       // AI ROUTER
-      // ========================================
       //
-      // EVERY MESSAGE GOES TO AI FIRST.
+      // TEXT + VOICE BOTH COME HERE
       //
       // ========================================
 
@@ -384,11 +813,13 @@ const receiveWebhook =
 
           const result =
             await processReminderMessage({
+
               phoneNumber:
                 from,
 
               message:
                 text,
+
             });
 
 
@@ -513,17 +944,15 @@ const receiveWebhook =
           );
 
 
-          // --------------------------------------
-          // Generate personalized AI response
-          // --------------------------------------
-
           const reply =
             await generateConversationResponse({
+
               message:
                 text,
 
               phoneNumber:
                 from,
+
             });
 
 
@@ -532,10 +961,6 @@ const receiveWebhook =
             reply
           );
 
-
-          // --------------------------------------
-          // Send response
-          // --------------------------------------
 
           await sendWhatsAppMessage(
             from,
@@ -550,6 +975,7 @@ const receiveWebhook =
           try {
 
             await addRecentContext({
+
               phoneNumber:
                 from,
 
@@ -558,6 +984,7 @@ const receiveWebhook =
 
               content:
                 reply,
+
             });
 
           } catch (
@@ -575,15 +1002,7 @@ const receiveWebhook =
           // Extract long-term memory
           // --------------------------------------
 
-          // --------------------------------------
-          // Extract long-term memory
-          // --------------------------------------
-
           try {
-
-            // ======================================
-            // GET RECENT CONVERSATION
-            // ======================================
 
             const recentContext =
               await getRecentContext(
@@ -591,10 +1010,6 @@ const receiveWebhook =
                 10
               );
 
-
-            // ======================================
-            // GET EXISTING USER MEMORY
-            // ======================================
 
             const existingMemory =
               await buildMemoryContext(
@@ -606,10 +1021,6 @@ const receiveWebhook =
               "🧠 Existing memory loaded for extraction"
             );
 
-
-            // ======================================
-            // CONTEXT-AWARE MEMORY EXTRACTION
-            // ======================================
 
             const memory =
               await extractMemory({
@@ -623,6 +1034,7 @@ const receiveWebhook =
                 recentContext,
 
                 existingMemory,
+
               });
 
 
@@ -631,10 +1043,6 @@ const receiveWebhook =
               memory
             );
 
-
-            // ======================================
-            // SAVE / UPDATE MEMORY
-            // ======================================
 
             if (
               memory &&
@@ -657,6 +1065,7 @@ const receiveWebhook =
                     from,
 
                   memory,
+
                 });
 
 
@@ -678,6 +1087,7 @@ const receiveWebhook =
                     from,
 
                   memory,
+
                 });
 
 
@@ -690,11 +1100,6 @@ const receiveWebhook =
           } catch (
           memoryError
           ) {
-
-            /*
-            Memory extraction must NEVER
-            break normal conversation.
-            */
 
             console.error(
               "⚠️ Context-aware memory extraction/save failed:",
@@ -720,11 +1125,6 @@ const receiveWebhook =
           );
 
 
-          /*
-          Cancellation is planned for the
-          next reminder-management phase.
-          */
-
           await sendWhatsAppMessage(
             from,
 
@@ -748,11 +1148,6 @@ const receiveWebhook =
             "🔄 Intent: RESCHEDULE_REMINDER"
           );
 
-
-          /*
-          Rescheduling is planned for the
-          next reminder-management phase.
-          */
 
           await sendWhatsAppMessage(
             from,
