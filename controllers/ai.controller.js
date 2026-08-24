@@ -1,5 +1,11 @@
-const { parseReminder } = require("../services/ai.service");
-const { parseReminderTime } = require("../services/time.service");
+const {
+  analyzeMessage,
+} = require("../services/ai.service");
+
+const {
+  parseReminderTime,
+} = require("../services/time.service");
+
 
 const testAI = async (req, res) => {
   try {
@@ -12,20 +18,28 @@ const testAI = async (req, res) => {
       });
     }
 
-    const result = await parseReminder(message);
+    const result = await analyzeMessage(message);
 
     return res.json({
       success: true,
       data: result,
     });
+
   } catch (error) {
+
+    console.error(
+      "AI analysis error:",
+      error.message
+    );
+
     return res.status(500).json({
       success: false,
-      message: "AI parsing failed",
+      message: "AI analysis failed",
       error: error.message,
     });
   }
 };
+
 
 const testTimeParser = async (req, res) => {
   try {
@@ -49,7 +63,11 @@ const testTimeParser = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Time parser error:", error.message);
+
+    console.error(
+      "Time parser error:",
+      error.message
+    );
 
     return res.status(400).json({
       success: false,
@@ -57,6 +75,7 @@ const testTimeParser = async (req, res) => {
     });
   }
 };
+
 
 module.exports = {
   testAI,

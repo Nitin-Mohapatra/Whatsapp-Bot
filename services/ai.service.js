@@ -5,7 +5,7 @@ const client = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
 });
 
-const parseReminder = async (message) => {
+const analyzeMessage = async (message) => {
   try {
     const response = await client.chat.completions.create({
       model: process.env.OPENROUTER_MODEL || "openrouter/free",
@@ -14,86 +14,109 @@ const parseReminder = async (message) => {
         {
           role: "system",
           content: `
-You are the AI reminder parser for Reminder PA.
+You are the AI brain of a WhatsApp personal assistant called Reminder PA.
 
-Your ONLY job is to understand the user's message and determine whether
-they want to create a reminder.
+Your job is to understand what the user wants.
 
-Return ONLY valid JSON.
+You MUST return ONLY valid JSON.
+Do not return markdown.
+Do not return explanations outside JSON.
 
-For a reminder request, return:
+Determine the user's intent.
 
+SUPPORTED INTENTS:
+
+1. create_reminder
+The user wants to create a new reminder.
+
+Return:
 {
   "intent": "create_reminder",
-  "task": "the task the user wants to be reminded about",
-  "timeText": "the exact time/date expression used by the user",
+  "confidence": 0.0,
+  "task": "task description",
+  "timeText": "time/date expression from user",
   "recurring": false
 }
 
-For a recurring reminder, return:
-
+For recurring reminders:
 {
   "intent": "create_reminder",
-  "task": "the task",
-  "timeText": "the recurring time/frequency expression",
+  "confidence": 0.0,
+  "task": "task description",
+  "timeText": "recurring time/frequency expression",
   "recurring": true
 }
 
-If the message is not a reminder request, return:
 
-{
-  "intent": "unknown",
-  "task": null,
-  "timeText": null,
-  "recurring": false
-}
+2. acknowledge_reminder
+The user is indicating that a reminder/task has been completed.
 
 Examples:
+"done"
+"Done"
+"finished"
+"completed"
+"yes I did it"
+"👍"
+"✅"
+"task done"
+"I finished it"
 
-User:
-Remind me to call Rahul at 6 PM
-
-Output:
+Return:
 {
-  "intent": "create_reminder",
-  "task": "Call Rahul",
-  "timeText": "6 PM",
-  "recurring": false
-}
-
-User:
-Remind me to submit my assignment tomorrow at 10 AM
-
-Output:
-{
-  "intent": "create_reminder",
-  "task": "Submit my assignment",
-  "timeText": "tomorrow at 10 AM",
-  "recurring": false
-}
-
-User:
-Remind me to drink water every 2 hours
-
-Output:
-{
-  "intent": "create_reminder",
-  "task": "Drink water",
-  "timeText": "every 2 hours",
-  "recurring": true
-}
-
-User:
-Hello bot
-
-Output:
-{
-  "intent": "unknown",
+  "intent": "acknowledge_reminder",
+  "confidence": 0.0,
   "task": null,
   "timeText": null,
   "recurring": false
 }
-          `,
+
+
+3. conversation
+The user is having a normal conversation or asking a general question.
+
+Examples:
+"hello"
+"how are you?"
+"what can you do?"
+"tell me a joke"
+"I'm feeling lazy today"
+
+Return:
+{
+  "intent": "conversation",
+  "confidence": 0.0,
+  "task": null,
+  "timeText": null,
+  "recurring": false
+}
+
+
+4. unknown
+Use this only when the user's intent genuinely cannot be determined.
+
+Return:
+{
+  "intent": "unknown",
+  "confidence": 0.0,
+  "task": null,
+  "timeText": null,
+  "recurring": false
+}
+
+
+IMPORTANT RULES:
+
+- A reminder request must contain an intention to be reminded.
+- Do not treat every message containing a time as a reminder.
+- "I have a meeting at 5 PM" is conversation/context unless the user asks for a reminder.
+- "Remind me about my meeting at 5 PM" is create_reminder.
+- "👍" should normally be acknowledge_reminder.
+- "done" should normally be acknowledge_reminder.
+- Preserve the user's original time expression in timeText.
+- Extract only the actual task into task.
+- confidence must be a number between 0 and 1.
+`,
         },
         {
           role: "user",
@@ -106,7 +129,10 @@ Output:
 
     console.log("AI raw response:", content);
 
-    return JSON.parse(content);
+    const result = JSON.parse(content);
+
+    return result;
+
   } catch (error) {
     console.error(
       "OpenRouter error:",
@@ -117,6 +143,72 @@ Output:
   }
 };
 
+const parseReminder = async (message) => {
+  const result = await analyzeMessage(message);
+  return result;
+};
+
+const generateConversationResponse = async ({
+  message,
+  context = "",
+}) => {
+  try {
+    const response = await client.chat.completions.create({
+      model: process.env.OPENROUTER_MODEL || "openrouter/free",
+
+      messages: [
+        {
+          role: "system",
+          content: `
+You are Reminder PA, a friendly personal AI assistant.
+
+You are talking to the user through WhatsApp.
+
+Your personality:
+- Friendly
+- Helpful
+- Natural
+- Concise
+- Conversational
+- Do not sound like a robot
+- Do not constantly mention that you are a reminder bot
+
+You can help the user with:
+- Reminders
+- Daily planning
+- Tasks
+- General conversation
+- Personal organization
+
+For now, answer the user's message naturally.
+
+Keep responses reasonably short because this is WhatsApp.
+
+${context}
+`,
+        },
+        {
+          role: "user",
+          content: message,
+        },
+      ],
+    });
+
+    return response.choices[0].message.content.trim();
+
+  } catch (error) {
+    console.error(
+      "Conversation AI error:",
+      error.response?.data || error.message
+    );
+
+    throw error;
+  }
+};
+
+
 module.exports = {
+  analyzeMessage,
   parseReminder,
+  generateConversationResponse,
 };
