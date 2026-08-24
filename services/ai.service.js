@@ -1089,12 +1089,14 @@ ${message}
 
 
 // ============================================================
-// MEMORY EXTRACTION
+// MEMORY EXTRACTION WITH CONTEXT
 // ============================================================
 
 const extractMemory = async ({
   message,
   phoneNumber = null,
+  recentContext = [],
+  existingMemory = "",
 }) => {
 
   try {
@@ -1103,7 +1105,6 @@ const extractMemory = async ({
       !message ||
       !message.trim()
     ) {
-
       return {
         shouldRemember: false,
         isUpdate: false,
@@ -1114,49 +1115,115 @@ const extractMemory = async ({
     }
 
 
-    const systemPrompt = `
-You are the memory extraction system for a personal AI assistant.
+    // ========================================================
+    // FORMAT RECENT CONTEXT
+    // ========================================================
 
-Determine whether the user's message contains information
-worth remembering for future conversations.
+    const formattedRecentContext =
+      Array.isArray(recentContext) &&
+      recentContext.length
+        ? recentContext
+            .map(
+              (item) =>
+                `${item.role}: ${item.content}`
+            )
+            .join("\n")
+        : "No recent conversation available.";
+
+
+    // ========================================================
+    // MEMORY EXTRACTION PROMPT
+    // ========================================================
+
+    const systemPrompt = `
+You are the long-term memory system for a personal AI WhatsApp assistant.
+
+Your job is to identify information that should be remembered about
+the user for future conversations.
+
+You have access to:
+
+1. EXISTING USER MEMORY
+2. RECENT CONVERSATION
+3. CURRENT USER MESSAGE
+
+Use ALL THREE when deciding what the user means.
+
+============================================================
+EXISTING USER MEMORY
+============================================================
+
+${existingMemory || "No stored memory available."}
+
+
+============================================================
+RECENT CONVERSATION
+============================================================
+
+${formattedRecentContext}
+
+
+============================================================
+CURRENT USER MESSAGE
+============================================================
+
+${message.trim()}
+
+
+============================================================
+WHAT TO REMEMBER
+============================================================
 
 Remember information that is:
 
 - personal
-- useful later
+- useful in future conversations
 - reasonably stable
-- explicitly stated or strongly implied
-
-Types:
-
-fact
-preference
-routine
+- explicitly stated
+- a correction to previously stored information
+- a preference
+- a routine
+- a useful personal fact
 
 
 ============================================================
-NEW MEMORY
+IMPORTANT: CONTEXTUAL CORRECTIONS
 ============================================================
 
-"My favorite color is blue."
+The user may refer to something indirectly.
+
+Example:
+
+User:
+"I usually go for a walk at 7 PM."
+
+Assistant:
+"Got it. That's a nice routine."
+
+User:
+"Actually, make that 6 PM."
+
+The current message does NOT explicitly say "walking".
+
+You must use the recent conversation and existing memory.
 
 Return:
 
 {
   "shouldRemember": true,
-  "isUpdate": false,
-  "type": "preference",
-  "key": "favorite_color",
-  "value": "blue"
+  "isUpdate": true,
+  "type": "routine",
+  "key": "walking",
+  "value": "6 PM"
 }
 
 
-============================================================
-MEMORY UPDATE / CORRECTION
-============================================================
+Another example:
 
-If the user corrects something previously remembered:
+Existing memory:
+favorite_color = blue
 
+User:
 "Actually, my favorite color is green."
 
 Return:
@@ -1170,19 +1237,72 @@ Return:
 }
 
 
-Other correction examples:
+Another example:
 
-"No, I prefer tea."
+Existing memory:
+walking = 7 PM
 
-"I meant 6 PM, not 7 PM."
+User:
+"Change that to 6 PM."
 
-"From now on, remind me at 8 AM."
+If recent conversation makes it clear that "that" refers to walking:
 
-"Change my walking time to 6 PM."
+{
+  "shouldRemember": true,
+  "isUpdate": true,
+  "type": "routine",
+  "key": "walking",
+  "value": "6 PM"
+}
 
-"I don't like long reminders."
 
-"I prefer short messages."
+============================================================
+NEW MEMORY
+============================================================
+
+Example:
+
+"My favorite color is green."
+
+Return:
+
+{
+  "shouldRemember": true,
+  "isUpdate": false,
+  "type": "preference",
+  "key": "favorite_color",
+  "value": "green"
+}
+
+
+Example:
+
+"I usually go for a walk at 7 PM."
+
+Return:
+
+{
+  "shouldRemember": true,
+  "isUpdate": false,
+  "type": "routine",
+  "key": "walking",
+  "value": "7 PM"
+}
+
+
+Example:
+
+"My name is Nitin."
+
+Return:
+
+{
+  "shouldRemember": true,
+  "isUpdate": false,
+  "type": "fact",
+  "key": "name",
+  "value": "Nitin"
+}
 
 
 ============================================================
@@ -1201,6 +1321,10 @@ Do NOT remember:
 
 "Thanks."
 
+Temporary emotions.
+
+One-time statements that have no future usefulness.
+
 
 ============================================================
 OUTPUT
@@ -1216,7 +1340,8 @@ If something should be remembered:
   "value": "short description"
 }
 
-If something is a correction:
+
+If something updates existing memory:
 
 {
   "shouldRemember": true,
@@ -1226,7 +1351,8 @@ If something is a correction:
   "value": "new value"
 }
 
-Otherwise:
+
+If nothing should be remembered:
 
 {
   "shouldRemember": false,
@@ -1237,41 +1363,95 @@ Otherwise:
 }
 
 
-IMPORTANT:
+============================================================
+IMPORTANT RULES
+============================================================
 
-Do not invent information.
+- Use recent conversation to resolve words such as:
+  "it", "that", "this", "them", "there", "same", "change it",
+  "make that", "instead", "actually", etc.
 
-Do not store temporary emotions.
+- Use existing memory to understand corrections.
 
-Do not store sensitive personal information.
+- If the user is correcting existing memory, set isUpdate=true.
 
-Return JSON only.
+- Do NOT invent information.
+
+- Do NOT guess when the reference is genuinely ambiguous.
+
+- Do NOT store sensitive personal information.
+
+- Do NOT store temporary emotions.
+
+- Return JSON only.
+
+NEVER return markdown.
+NEVER return explanations.
+NEVER return "User Safety: safe".
 `;
 
 
-    const response =
-      await client.chat.completions.create({
-        model: MODEL,
+    // ========================================================
+    // CALL OPENROUTER
+    // ========================================================
 
-        temperature: 0,
+    let response;
 
-        messages: [
-          {
-            role: "system",
-            content: systemPrompt,
+    try {
+
+      response =
+        await client.chat.completions.create({
+          model: MODEL,
+
+          temperature: 0,
+
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt,
+            },
+
+            {
+              role: "user",
+              content: message.trim(),
+            },
+          ],
+
+          response_format: {
+            type: "json_object",
           },
+        });
 
-          {
-            role: "user",
-            content: message.trim(),
-          },
-        ],
+    } catch (structuredError) {
 
-        response_format: {
-          type: "json_object",
-        },
-      });
+      console.warn(
+        "⚠️ Structured memory JSON request failed. Retrying..."
+      );
 
+      response =
+        await client.chat.completions.create({
+          model: MODEL,
+
+          temperature: 0,
+
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt,
+            },
+
+            {
+              role: "user",
+              content: message.trim(),
+            },
+          ],
+        });
+    }
+
+
+    // ========================================================
+    // AI RESPONSE
+    // ========================================================
 
     const content =
       response
@@ -1285,11 +1465,19 @@ Return JSON only.
     );
 
 
+    // ========================================================
+    // PARSE JSON
+    // ========================================================
+
     const parsed =
       parseAIJson(content);
 
 
     if (!parsed) {
+
+      console.warn(
+        "⚠️ Memory extractor returned invalid JSON."
+      );
 
       return {
         shouldRemember: false,
@@ -1301,9 +1489,9 @@ Return JSON only.
     }
 
 
-    /*
-    Validate shouldRemember
-    */
+    // ========================================================
+    // VALIDATE shouldRemember
+    // ========================================================
 
     if (
       parsed.shouldRemember !== true
@@ -1319,9 +1507,9 @@ Return JSON only.
     }
 
 
-    /*
-    Validate type
-    */
+    // ========================================================
+    // VALIDATE TYPE
+    // ========================================================
 
     const allowedTypes = [
       "fact",
@@ -1335,6 +1523,11 @@ Return JSON only.
       )
     ) {
 
+      console.warn(
+        "⚠️ Invalid memory type:",
+        parsed.type
+      );
+
       return {
         shouldRemember: false,
         isUpdate: false,
@@ -1345,13 +1538,12 @@ Return JSON only.
     }
 
 
-    /*
-    Validate key
-    */
+    // ========================================================
+    // VALIDATE KEY
+    // ========================================================
 
     if (
-      typeof parsed.key !==
-        "string" ||
+      typeof parsed.key !== "string" ||
       !parsed.key.trim()
     ) {
 
@@ -1365,13 +1557,12 @@ Return JSON only.
     }
 
 
-    /*
-    Validate value
-    */
+    // ========================================================
+    // VALIDATE VALUE
+    // ========================================================
 
     if (
-      typeof parsed.value !==
-        "string" ||
+      typeof parsed.value !== "string" ||
       !parsed.value.trim()
     ) {
 
@@ -1385,7 +1576,12 @@ Return JSON only.
     }
 
 
+    // ========================================================
+    // FINAL RESULT
+    // ========================================================
+
     const result = {
+
       shouldRemember: true,
 
       isUpdate:
@@ -1403,7 +1599,7 @@ Return JSON only.
 
 
     console.log(
-      "🧠 Memory extraction result:",
+      "🧠 Context-aware memory result:",
       result
     );
 
@@ -1413,7 +1609,7 @@ Return JSON only.
   } catch (error) {
 
     console.error(
-      "❌ Memory extraction error:",
+      "❌ Context-aware memory extraction error:",
       error.response?.data ||
         error.message
     );
@@ -1427,7 +1623,6 @@ Return JSON only.
     };
   }
 };
-
 
 // ============================================================
 // BACKWARD-COMPATIBLE ALIASES

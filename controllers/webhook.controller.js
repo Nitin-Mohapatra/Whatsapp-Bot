@@ -21,6 +21,9 @@ const {
 const {
   addRecentContext,
   saveExtractedMemory,
+  updateMemory,
+  getRecentContext,
+  buildMemoryContext,
 } = require("../services/memory.service");
 
 
@@ -52,7 +55,7 @@ const verifyWebhook = (
   if (
     mode === "subscribe" &&
     token ===
-      process.env.WHATSAPP_VERIFY_TOKEN
+    process.env.WHATSAPP_VERIFY_TOKEN
   ) {
 
     console.log(
@@ -262,10 +265,10 @@ const receiveWebhook =
         timestamp:
           message.timestamp
             ? new Date(
-                Number(
-                  message.timestamp
-                ) * 1000
-              )
+              Number(
+                message.timestamp
+              ) * 1000
+            )
             : new Date(),
 
         rawPayload:
@@ -296,7 +299,7 @@ const receiveWebhook =
         });
 
       } catch (
-        memoryError
+      memoryError
       ) {
 
         /*
@@ -364,7 +367,7 @@ const receiveWebhook =
       // ========================================
 
       switch (
-        aiResult.intent
+      aiResult.intent
       ) {
 
 
@@ -558,7 +561,7 @@ const receiveWebhook =
             });
 
           } catch (
-            memoryError
+          memoryError
           ) {
 
             console.error(
@@ -572,57 +575,129 @@ const receiveWebhook =
           // Extract long-term memory
           // --------------------------------------
 
+          // --------------------------------------
+          // Extract long-term memory
+          // --------------------------------------
+
           try {
+
+            // ======================================
+            // GET RECENT CONVERSATION
+            // ======================================
+
+            const recentContext =
+              await getRecentContext(
+                from,
+                10
+              );
+
+
+            // ======================================
+            // GET EXISTING USER MEMORY
+            // ======================================
+
+            const existingMemory =
+              await buildMemoryContext(
+                from
+              );
+
+
+            console.log(
+              "🧠 Existing memory loaded for extraction"
+            );
+
+
+            // ======================================
+            // CONTEXT-AWARE MEMORY EXTRACTION
+            // ======================================
 
             const memory =
               await extractMemory({
+
                 message:
                   text,
 
                 phoneNumber:
                   from,
+
+                recentContext,
+
+                existingMemory,
               });
 
 
             console.log(
-              "🧠 Extracted memory:",
+              "🧠 Context-aware extracted memory:",
               memory
             );
 
 
-            // ------------------------------------
-            // Save if useful
-            // ------------------------------------
+            // ======================================
+            // SAVE / UPDATE MEMORY
+            // ======================================
 
             if (
               memory &&
               memory.shouldRemember
             ) {
 
-              await saveExtractedMemory({
-                phoneNumber:
-                  from,
+              if (
+                memory.isUpdate
+              ) {
 
-                memory,
-              });
+                console.log(
+                  "🔄 Updating existing memory:",
+                  memory.key
+                );
 
 
-              console.log(
-                "💾 Memory saved successfully"
-              );
+                await updateMemory({
+
+                  phoneNumber:
+                    from,
+
+                  memory,
+                });
+
+
+                console.log(
+                  "✅ Existing memory updated successfully"
+                );
+
+              } else {
+
+                console.log(
+                  "💾 Saving new memory:",
+                  memory.key
+                );
+
+
+                await saveExtractedMemory({
+
+                  phoneNumber:
+                    from,
+
+                  memory,
+                });
+
+
+                console.log(
+                  "✅ New memory saved successfully"
+                );
+              }
             }
 
           } catch (
-            memoryError
+          memoryError
           ) {
 
             /*
-            Memory extraction must never
-            break a normal conversation.
+            Memory extraction must NEVER
+            break normal conversation.
             */
 
             console.error(
-              "⚠️ Memory extraction/save failed:",
+              "⚠️ Context-aware memory extraction/save failed:",
               memoryError.message
             );
           }
@@ -746,7 +821,7 @@ const receiveWebhook =
       console.error(
         "Webhook processing error:",
         error.response?.data ||
-          error.message
+        error.message
       );
 
 
