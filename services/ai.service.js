@@ -1,7 +1,18 @@
 const OpenAI = require("openai");
 
-// jsonrepair is used only as a fallback when the model returns
-// slightly malformed JSON.
+// ============================================================
+// MEMORY SERVICE
+// ============================================================
+
+const {
+  buildMemoryContext,
+} = require("./memory.service");
+
+
+// ============================================================
+// JSON REPAIR
+// ============================================================
+
 let jsonrepair = null;
 
 try {
@@ -17,6 +28,7 @@ try {
   );
 }
 
+
 // ============================================================
 // OPENROUTER CLIENT
 // ============================================================
@@ -30,6 +42,7 @@ const MODEL =
   process.env.OPENROUTER_MODEL ||
   "openai/gpt-oss-20b:free";
 
+
 // ============================================================
 // DEFAULT ROUTER RESULT
 // ============================================================
@@ -41,6 +54,7 @@ const defaultRouterResult = {
   timeText: null,
   recurring: false,
 };
+
 
 // ============================================================
 // NORMALIZE ROUTER RESULT
@@ -104,23 +118,9 @@ const normalizeRouterResult = (result) => {
   };
 };
 
+
 // ============================================================
 // ACKNOWLEDGMENT DETECTION
-// ============================================================
-//
-// These messages should immediately acknowledge the latest
-// reminder without needing AI.
-//
-// Examples:
-//
-// done
-// okay
-// ok
-// yes
-// completed
-// 👍
-// 👌
-//
 // ============================================================
 
 const isAcknowledgmentMessage = (message) => {
@@ -174,6 +174,7 @@ const isAcknowledgmentMessage = (message) => {
   );
 };
 
+
 // ============================================================
 // LOCAL REMINDER DETECTION
 // ============================================================
@@ -199,6 +200,7 @@ const looksLikeReminder = (message) => {
   );
 };
 
+
 // ============================================================
 // EXTRACT JSON FROM AI RESPONSE
 // ============================================================
@@ -210,15 +212,11 @@ const extractJsonCandidate = (content) => {
 
   let cleaned = content.trim();
 
-  // Remove markdown code fences.
-
   cleaned = cleaned
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
-
-  // Find JSON object inside surrounding text.
 
   const firstBrace =
     cleaned.indexOf("{");
@@ -240,6 +238,7 @@ const extractJsonCandidate = (content) => {
   return cleaned;
 };
 
+
 // ============================================================
 // PARSE AI JSON SAFELY
 // ============================================================
@@ -253,8 +252,6 @@ const parseAIJson = (content) => {
   }
 
   const raw = content.trim();
-
-  // Prevent safety-classifier text from being treated as JSON.
 
   if (
     raw
@@ -279,10 +276,6 @@ const parseAIJson = (content) => {
     return null;
   }
 
-  // ----------------------------------------
-  // NORMAL JSON PARSE
-  // ----------------------------------------
-
   try {
     return JSON.parse(candidate);
   } catch (error) {
@@ -290,10 +283,6 @@ const parseAIJson = (content) => {
       "⚠️ Normal JSON.parse failed. Trying jsonrepair..."
     );
   }
-
-  // ----------------------------------------
-  // JSONREPAIR FALLBACK
-  // ----------------------------------------
 
   if (jsonrepair) {
     try {
@@ -319,6 +308,7 @@ const parseAIJson = (content) => {
   return null;
 };
 
+
 // ============================================================
 // LOCAL FALLBACK ROUTER
 // ============================================================
@@ -326,22 +316,16 @@ const parseAIJson = (content) => {
 const localFallbackRouter = (
   message
 ) => {
-  // Empty message
-
   if (
     !message ||
     !message.trim()
   ) {
     return {
       ...defaultRouterResult,
-
       intent: "unknown",
-
       confidence: 1,
     };
   }
-
-  // Acknowledgment
 
   if (
     isAcknowledgmentMessage(message)
@@ -360,8 +344,6 @@ const localFallbackRouter = (
     };
   }
 
-  // Obvious reminder
-
   if (
     looksLikeReminder(message)
   ) {
@@ -378,8 +360,6 @@ const localFallbackRouter = (
     };
   }
 
-  // Otherwise conversation
-
   return {
     intent: "conversation",
 
@@ -392,6 +372,7 @@ const localFallbackRouter = (
     recurring: false,
   };
 };
+
 
 // ============================================================
 // AI ROUTER
@@ -407,13 +388,9 @@ const parseReminder = async (
     ) {
       return {
         intent: "unknown",
-
         confidence: 1,
-
         task: null,
-
         timeText: null,
-
         recurring: false,
       };
     }
@@ -677,9 +654,7 @@ Return JSON only.
 
     if (parsed) {
       const normalized =
-        normalizeRouterResult(
-          parsed
-        );
+        normalizeRouterResult(parsed);
 
       if (normalized) {
         console.log(
@@ -812,7 +787,9 @@ return:
     );
 
     return fallback;
+
   } catch (error) {
+
     console.error(
       "❌ OpenRouter error:",
       error.response?.data ||
@@ -825,94 +802,188 @@ return:
   }
 };
 
+
 // ============================================================
-// CONVERSATION AI
+// CONVERSATION AI WITH MEMORY
 // ============================================================
 
 const generateConversationReply =
   async ({
     message,
+    phoneNumber = null,
     context = "",
   }) => {
+
     try {
+
+      // ======================================================
+      // LOAD USER MEMORY
+      // ======================================================
+
+      let memoryContext = "";
+
+      if (phoneNumber) {
+
+        try {
+
+          memoryContext =
+            await buildMemoryContext(
+              phoneNumber
+            );
+
+          console.log(
+            "🧠 User memory loaded for:",
+            phoneNumber
+          );
+
+        } catch (memoryError) {
+
+          console.error(
+            "⚠️ Could not load user memory:",
+            memoryError.message
+          );
+
+          memoryContext =
+            "No stored memory available.";
+        }
+      }
+
+
+      // ======================================================
+      // COMBINE MEMORY + CONTEXT
+      // ======================================================
+
+      const combinedContext = `
+USER MEMORY:
+
+${memoryContext || "No stored memory available."}
+
+
+RECENT CONTEXT:
+
+${context || "No additional context available."}
+`;
+
+
+      // ======================================================
+      // AI PROMPT
+      // ======================================================
+
       const systemPrompt = `
 You are a friendly personal WhatsApp assistant.
 
 You are not just a reminder bot.
 
-Talk naturally like a helpful personal assistant.
+You are a personal assistant who knows the user over time.
+
+Use the user's memory and recent context to make your
+responses more personalized and natural.
+
+IMPORTANT:
+
+- Do not mention that you are reading a memory database.
+- Do not reveal internal memory structures.
+- Do not invent facts about the user.
+- Only use information provided in the memory/context.
+- If something is uncertain, don't pretend you know it.
+- Do not force every conversation into a reminder.
 
 Your responsibilities include:
 
 - casual conversation
 - helping the user think
-- answering simple questions
+- answering questions
 - helping plan the day
 - understanding emotions
-- remembering context when context is provided
 - helping with productivity
-- suggesting useful actions when appropriate
+- remembering useful context
+- making personalized suggestions
+
+If the user refers to something with words like:
+
+"it"
+"that"
+"them"
+"same"
+"again"
+"tomorrow"
+"the project"
+"that thing"
+
+use recent conversation and stored memory to understand
+what they are referring to.
 
 Do not sound robotic.
 
 Do not repeatedly say:
 "I am Reminder PA."
 
-Do not force every conversation into a reminder.
-
 If the user says something emotional, respond naturally.
 
 If the user says something exciting, acknowledge it.
 
-If the user asks a normal question, answer it normally.
+If the user asks a normal question, answer normally.
 
 Keep WhatsApp responses reasonably concise.
 
-User message:
+
+============================================================
+USER MEMORY + CONTEXT
+============================================================
+
+${combinedContext}
+
+
+============================================================
+CURRENT MESSAGE
+============================================================
 
 ${message}
-
-Previous context:
-
-${context || "No previous context available."}
 `;
 
+      // ======================================================
+      // OPENROUTER
+      // ======================================================
+
       const response =
-        await client.chat.completions.create(
-          {
-            model: MODEL,
+        await client.chat.completions.create({
+          model: MODEL,
 
-            temperature: 0.7,
+          temperature: 0.7,
 
-            messages: [
-              {
-                role: "system",
-                content:
-                  systemPrompt,
-              },
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt,
+            },
 
-              {
-                role: "user",
-                content: message,
-              },
-            ],
-          }
-        );
+            {
+              role: "user",
+              content: message,
+            },
+          ],
+        });
+
 
       const reply =
         response
           ?.choices?.[0]
           ?.message?.content;
 
+
       if (
         !reply ||
         !reply.trim()
       ) {
+
         return "I'm here. Tell me what's on your mind. 😊";
       }
 
+
       return reply.trim();
+
     } catch (error) {
+
       console.error(
         "❌ Conversation AI error:",
         error.response?.data ||
@@ -923,23 +994,9 @@ ${context || "No previous context available."}
     }
   };
 
+
 // ============================================================
 // BACKWARD-COMPATIBLE ALIASES
-// ============================================================
-//
-// Your existing controllers use:
-//
-// analyzeMessage()
-// generateConversationResponse()
-//
-// Your reminder pipeline uses:
-//
-// parseReminder()
-// generateConversationReply()
-//
-// Keep all four names available so we don't have to change
-// multiple files.
-//
 // ============================================================
 
 const analyzeMessage =
@@ -948,20 +1005,19 @@ const analyzeMessage =
 const generateConversationResponse =
   generateConversationReply;
 
+
 // ============================================================
 // EXPORTS
 // ============================================================
 
 module.exports = {
-  // Main router
+
   parseReminder,
 
-  // Controller compatibility
   analyzeMessage,
 
-  // Main conversation function
   generateConversationReply,
 
-  // Controller compatibility
   generateConversationResponse,
+
 };

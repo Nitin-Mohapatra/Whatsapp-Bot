@@ -374,10 +374,11 @@ const receiveWebhook = async (req, res) => {
         );
 
 
-        const reply =
-          await generateConversationResponse({
-            message: text,
-          });
+      const reply =
+  await generateConversationResponse({
+    message: text,
+    phoneNumber: from,
+  });
 
 
         console.log(
