@@ -1,4 +1,10 @@
 const OpenAI = require("openai");
+const { jsonrepair } = require("jsonrepair");
+
+
+// ============================================================
+// OPENROUTER CLIENT
+// ============================================================
 
 const client = new OpenAI({
   apiKey: process.env.OPENROUTER_API_KEY,
@@ -7,34 +13,30 @@ const client = new OpenAI({
 
 
 // ============================================================
-// HELPER — CLEAN AI JSON RESPONSE
+// MODEL
 // ============================================================
 
-const parseAIJson = (content) => {
+const MODEL =
+  process.env.OPENROUTER_MODEL ||
+  "openrouter/free";
+
+
+// ============================================================
+// CLEAN AI RESPONSE
+// ============================================================
+
+const cleanAIResponse = (content) => {
   if (!content) {
     throw new Error("AI returned an empty response");
   }
 
-  let cleaned = content.trim();
+  let cleaned = String(content).trim();
 
-  console.log("AI raw response:", content);
+  console.log("AI raw response:", cleaned);
+
 
   // ----------------------------------------------------------
-  // Remove Markdown code fences
-  //
-  // Example:
-  //
-  // ```json
-  // {
-  //   "intent": "conversation"
-  // }
-  // ```
-  //
-  // becomes:
-  //
-  // {
-  //   "intent": "conversation"
-  // }
+  // Remove markdown code fences
   // ----------------------------------------------------------
 
   cleaned = cleaned
@@ -45,13 +47,13 @@ const parseAIJson = (content) => {
 
 
   // ----------------------------------------------------------
-  // Sometimes the model may return extra text before/after JSON.
-  //
-  // Try to extract the first JSON object.
+  // If there is text before/after JSON,
+  // extract the JSON object.
   // ----------------------------------------------------------
 
   const firstBrace = cleaned.indexOf("{");
   const lastBrace = cleaned.lastIndexOf("}");
+
 
   if (
     firstBrace !== -1 &&
@@ -65,48 +67,223 @@ const parseAIJson = (content) => {
   }
 
 
-  console.log("AI cleaned response:", cleaned);
+  console.log(
+    "AI cleaned response:",
+    cleaned
+  );
 
+
+  return cleaned;
+};
+
+
+// ============================================================
+// PARSE JSON SAFELY
+// ============================================================
+
+const parseAIJson = (content) => {
+
+  const cleaned = cleanAIResponse(content);
+
+
+  // ----------------------------------------------------------
+  // FIRST ATTEMPT
+  // ----------------------------------------------------------
 
   try {
+
     return JSON.parse(cleaned);
-  } catch (error) {
 
-    console.error(
-      "❌ AI JSON parsing failed"
+  } catch (firstError) {
+
+    console.log(
+      "⚠️ Normal JSON.parse failed. Trying jsonrepair..."
     );
 
-    console.error(
-      "Raw AI response:",
-      content
-    );
 
-    console.error(
-      "Cleaned AI response:",
-      cleaned
-    );
+    // --------------------------------------------------------
+    // SECOND ATTEMPT — JSON REPAIR
+    // --------------------------------------------------------
 
-    throw new Error(
-      `AI returned invalid JSON: ${error.message}`
-    );
+    try {
+
+      const repaired =
+        jsonrepair(cleaned);
+
+      console.log(
+        "AI repaired JSON:",
+        repaired
+      );
+
+
+      return JSON.parse(repaired);
+
+    } catch (repairError) {
+
+      console.error(
+        "❌ AI JSON parsing failed"
+      );
+
+      console.error(
+        "Raw response:",
+        content
+      );
+
+      console.error(
+        "Cleaned response:",
+        cleaned
+      );
+
+      throw new Error(
+        `AI returned invalid JSON: ${firstError.message}`
+      );
+    }
   }
 };
 
 
 // ============================================================
-// OPENROUTER REQUEST
+// VALIDATE ROUTER RESPONSE
 // ============================================================
 
-const callAI = async (systemPrompt, message) => {
+const validateRouterResult = (result) => {
+
+  if (!result || typeof result !== "object") {
+    throw new Error(
+      "AI router returned an invalid object"
+    );
+  }
+
+
+  const allowedIntents = [
+    "create_reminder",
+    "acknowledge_reminder",
+    "conversation",
+    "unknown",
+  ];
+
+
+  if (
+    !allowedIntents.includes(result.intent)
+  ) {
+
+    throw new Error(
+      `Invalid AI intent: ${result.intent}`
+    );
+  }
+
+
+  return result;
+};
+
+
+// ============================================================
+// VALIDATE REMINDER RESPONSE
+// ============================================================
+
+const validateReminderResult = (result) => {
+
+  if (!result || typeof result !== "object") {
+    throw new Error(
+      "AI reminder parser returned an invalid object"
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // Unknown
+  // ----------------------------------------------------------
+
+  if (result.intent === "unknown") {
+
+    return {
+      intent: "unknown",
+      task: null,
+      timeText: null,
+      recurring: false,
+    };
+  }
+
+
+  // ----------------------------------------------------------
+  // Must be create_reminder
+  // ----------------------------------------------------------
+
+  if (
+    result.intent !== "create_reminder"
+  ) {
+
+    throw new Error(
+      `Invalid reminder intent: ${result.intent}`
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // Task required
+  // ----------------------------------------------------------
+
+  if (
+    typeof result.task !== "string" ||
+    !result.task.trim()
+  ) {
+
+    throw new Error(
+      "Reminder task is missing"
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // Time required
+  // ----------------------------------------------------------
+
+  if (
+    typeof result.timeText !== "string" ||
+    !result.timeText.trim()
+  ) {
+
+    throw new Error(
+      "Reminder timeText is missing"
+    );
+  }
+
+
+  return {
+    intent: "create_reminder",
+
+    task: result.task.trim(),
+
+    timeText: result.timeText.trim(),
+
+    recurring:
+      Boolean(result.recurring),
+  };
+};
+
+
+// ============================================================
+// STRUCTURED AI REQUEST
+// ============================================================
+
+const callStructuredAI = async ({
+  systemPrompt,
+  message,
+  retry = true,
+}) => {
 
   try {
+
+    // --------------------------------------------------------
+    // IMPORTANT:
+    //
+    // response_format asks OpenRouter/model to return JSON.
+    // --------------------------------------------------------
 
     const response =
       await client.chat.completions.create({
 
-        model:
-          process.env.OPENROUTER_MODEL ||
-          "openrouter/free",
+        model: MODEL,
 
         messages: [
 
@@ -122,6 +299,16 @@ const callAI = async (systemPrompt, message) => {
 
         ],
 
+        // ----------------------------------------------------
+        // Ask model for JSON
+        // ----------------------------------------------------
+
+        response_format: {
+          type: "json_object",
+        },
+
+        // Keep router responses small
+        max_tokens: 500,
       });
 
 
@@ -130,6 +317,7 @@ const callAI = async (systemPrompt, message) => {
 
 
     if (!content) {
+
       throw new Error(
         "OpenRouter returned no content"
       );
@@ -141,10 +329,47 @@ const callAI = async (systemPrompt, message) => {
   } catch (error) {
 
     console.error(
-      "OpenRouter error:",
+      "OpenRouter structured request error:",
       error.response?.data ||
       error.message
     );
+
+
+    // --------------------------------------------------------
+    // RETRY ONCE
+    // --------------------------------------------------------
+
+    if (retry) {
+
+      console.log(
+        "🔄 Retrying AI request..."
+      );
+
+
+      const retryPrompt = `
+IMPORTANT:
+
+Return ONLY a valid JSON object.
+
+Do not return Markdown.
+Do not use code fences.
+Do not return explanations.
+Do not return safety messages.
+Do not return plain text.
+
+The output MUST start with { and end with }.
+
+${systemPrompt}
+`;
+
+
+      return await callStructuredAI({
+        systemPrompt: retryPrompt,
+        message,
+        retry: false,
+      });
+    }
+
 
     throw error;
   }
@@ -155,58 +380,33 @@ const callAI = async (systemPrompt, message) => {
 // AI ROUTER
 // ============================================================
 //
-// EVERY USER MESSAGE COMES HERE FIRST.
-//
-// Possible intents:
-//
-// create_reminder
-// acknowledge_reminder
-// conversation
-// unknown
+// EVERY USER MESSAGE SHOULD GO THROUGH THIS ROUTER.
 //
 // ============================================================
 
 const analyzeMessage = async (message) => {
 
   const systemPrompt = `
+
 You are the main AI router for a personal WhatsApp AI assistant.
 
-Your job is to understand the user's message and decide what the
-assistant should do.
+You are NOT just a reminder bot.
 
-The assistant is a personal assistant, not only a reminder bot.
+You are responsible for understanding what the user wants.
 
-The user may:
+Possible intents:
 
-1. Create a reminder
-2. Complete/acknowledge a reminder
-3. Have a normal conversation
-4. Ask questions
-5. Share information
-6. Express emotions
-7. Use emojis
-8. Ask the assistant to help plan their day
-9. Ask for suggestions
-10. Say something casually
+1. create_reminder
+2. acknowledge_reminder
+3. conversation
+4. unknown
 
-IMPORTANT:
 
-Return ONLY valid JSON.
+============================================================
+CREATE REMINDER
+============================================================
 
-DO NOT use Markdown.
-
-DO NOT use:
-\`\`\`
-\`\`\`json
-
-DO NOT add explanations before or after the JSON.
-
---------------------------------------------------
-INTENT: create_reminder
---------------------------------------------------
-
-Use this when the user wants the assistant to remind them about
-something at a particular time/date/frequency.
+Use create_reminder when the user explicitly asks to be reminded.
 
 Example:
 
@@ -216,13 +416,14 @@ Return:
 
 {
   "intent": "create_reminder",
-  "confidence": 1.0,
+  "confidence": 1,
   "task": "call Mom",
   "timeText": "tomorrow at 8 PM",
   "recurring": false
 }
 
-Another example:
+
+Example:
 
 "Remind me to drink water every 2 hours"
 
@@ -230,71 +431,117 @@ Return:
 
 {
   "intent": "create_reminder",
-  "confidence": 1.0,
+  "confidence": 1,
   "task": "drink water",
   "timeText": "every 2 hours",
   "recurring": true
 }
 
---------------------------------------------------
-INTENT: acknowledge_reminder
---------------------------------------------------
 
-Use this when the user is indicating that a reminder/task has
-been completed.
+IMPORTANT:
 
-This includes:
-
-"done"
-"finished"
-"completed"
-"yes done"
-"👍"
-"✅"
-"👌"
-"yes"
-"okay done"
-"did it"
-"completed it"
-
-Important:
-
-Emoji can communicate intent.
+Do NOT classify a normal statement as a reminder.
 
 For example:
 
-👍 = task completed
-✅ = task completed
-Done = task completed
+"I have a meeting tomorrow at 8 AM"
+
+is NOT automatically a reminder.
+
+It should be:
+
+{
+  "intent": "conversation",
+  "confidence": 0.9
+}
+
+
+But:
+
+"Remind me about my meeting tomorrow at 8 AM"
+
+is:
+
+{
+  "intent": "create_reminder",
+  "confidence": 1,
+  "task": "meeting",
+  "timeText": "tomorrow at 8 AM",
+  "recurring": false
+}
+
+
+============================================================
+ACKNOWLEDGE REMINDER
+============================================================
+
+Use acknowledge_reminder when the user indicates that a task
+has been completed.
+
+Examples:
+
+"done"
+
+"finished"
+
+"completed"
+
+"yes done"
+
+"did it"
+
+"done 👍"
+
+"👍"
+
+"✅"
+
+"👌"
+
 
 Return:
 
 {
   "intent": "acknowledge_reminder",
-  "confidence": 1.0
+  "confidence": 1
 }
 
---------------------------------------------------
-INTENT: conversation
---------------------------------------------------
 
-Use this for normal conversation.
+IMPORTANT:
+
+Emoji can carry meaning.
+
+👍 = completed
+
+✅ = completed
+
+👌 = completed
+
+
+============================================================
+CONVERSATION
+============================================================
+
+Use conversation for normal conversation.
 
 Examples:
 
 "Hey, how are you?"
 
-"Today I got a project worth 1 crore"
+"I got a project worth 1 crore"
 
-"I am feeling excited"
+"I am excited"
 
-"I am scared about tomorrow"
+"I am scared"
 
 "What should I do today?"
 
+"Help me plan my day"
+
 "Tell me something interesting"
 
-"Can you help me plan my day?"
+"How was your day?"
+
 
 Return:
 
@@ -303,11 +550,13 @@ Return:
   "confidence": 0.95
 }
 
---------------------------------------------------
-INTENT: unknown
---------------------------------------------------
 
-Use this only when the message cannot reasonably be classified.
+============================================================
+UNKNOWN
+============================================================
+
+Only use unknown if the message cannot reasonably be
+classified.
 
 Return:
 
@@ -316,35 +565,52 @@ Return:
   "confidence": 0.5
 }
 
---------------------------------------------------
-IMPORTANT
---------------------------------------------------
 
-Do NOT classify every message as a reminder.
-
-A reminder requires an actual intention to be reminded about
-something.
-
-For example:
-
-"I have a meeting tomorrow at 8 AM"
-
-is conversation/information unless the user asks to be reminded.
-
-But:
-
-"Remind me about my meeting tomorrow at 8 AM"
-
-is create_reminder.
+============================================================
+STRICT OUTPUT
+============================================================
 
 Return ONLY JSON.
+
+Never return:
+
+User Safety: safe
+
+Never return:
+
+User Safety: unsafe
+
+Never return Markdown.
+
+Never return:
+
+\`\`\`json
+
+Never return explanations.
+
+Never return text before or after the JSON.
+
 `;
 
 
-  return await callAI(
-    systemPrompt,
-    message
+  const result =
+    await callStructuredAI({
+      systemPrompt,
+      message,
+    });
+
+
+  const validated =
+    validateRouterResult(result);
+
+
+  console.log(
+    "🧠 AI Router Result:",
+    validated
   );
+
+
+  return validated;
 };
 
 
@@ -352,67 +618,33 @@ Return ONLY JSON.
 // REMINDER PARSER
 // ============================================================
 //
-// Used by reminder.pipeline.service.js
+// This is used by reminder.pipeline.service.js.
 //
-// It extracts the actual reminder information.
+// It extracts:
+//
+// task
+// timeText
+// recurring
 //
 // ============================================================
 
 const parseReminder = async (message) => {
 
   const systemPrompt = `
+
 You are the reminder extraction AI for a personal assistant.
 
-Determine whether the user wants to create a reminder.
+Your job is to determine whether the user wants to create
+a reminder.
 
-Return ONLY valid JSON.
+Return ONLY a JSON object.
 
-DO NOT use Markdown.
-DO NOT use \`\`\`json.
-DO NOT add explanations.
 
---------------------------------------------------
-REMINDER
---------------------------------------------------
+============================================================
+CREATE REMINDER
+============================================================
 
-If the user wants a reminder:
-
-{
-  "intent": "create_reminder",
-  "task": "the task",
-  "timeText": "the exact date/time/frequency expression",
-  "recurring": false
-}
-
---------------------------------------------------
-RECURRING REMINDER
---------------------------------------------------
-
-For recurring reminders:
-
-{
-  "intent": "create_reminder",
-  "task": "the task",
-  "timeText": "the recurring expression",
-  "recurring": true
-}
-
---------------------------------------------------
-NOT A REMINDER
---------------------------------------------------
-
-If the user does not want a reminder:
-
-{
-  "intent": "unknown",
-  "task": null,
-  "timeText": null,
-  "recurring": false
-}
-
---------------------------------------------------
-EXAMPLES
---------------------------------------------------
+Example:
 
 User:
 
@@ -428,19 +660,23 @@ Return:
 }
 
 
+Example:
+
 User:
 
-Remind me to write down Rashmi aunty and Vedic mom tomorrow at 8am
+Remind me to submit my assignment tomorrow at 10 AM
 
 Return:
 
 {
   "intent": "create_reminder",
-  "task": "write down Rashmi aunty and Vedic mom",
-  "timeText": "tomorrow at 8am",
+  "task": "submit my assignment",
+  "timeText": "tomorrow at 10 AM",
   "recurring": false
 }
 
+
+Example:
 
 User:
 
@@ -456,11 +692,27 @@ Return:
 }
 
 
+Example:
+
 User:
 
-Hey how are you?
+Remind me to write down rashmi aunty and vedic mom tomorrow at 8am
 
 Return:
+
+{
+  "intent": "create_reminder",
+  "task": "write down rashmi aunty and vedic mom",
+  "timeText": "tomorrow at 8am",
+  "recurring": false
+}
+
+
+============================================================
+NOT A REMINDER
+============================================================
+
+If the user does not want a reminder:
 
 {
   "intent": "unknown",
@@ -469,14 +721,77 @@ Return:
   "recurring": false
 }
 
+
+============================================================
+IMPORTANT
+============================================================
+
+Never return:
+
+User Safety: safe
+
+Never return:
+
+User Safety: unsafe
+
+Never return Markdown.
+
+Never return code fences.
+
+Never return explanations.
+
 Return ONLY JSON.
+
 `;
 
 
-  return await callAI(
-    systemPrompt,
-    message
+  let result;
+
+
+  try {
+
+    result =
+      await callStructuredAI({
+        systemPrompt,
+        message,
+      });
+
+  } catch (error) {
+
+    console.error(
+      "❌ Reminder AI failed:",
+      error.message
+    );
+
+
+    // --------------------------------------------------------
+    // IMPORTANT:
+    //
+    // Returning unknown prevents the entire WhatsApp webhook
+    // from crashing if the AI provider gives an unusable
+    // response.
+    // --------------------------------------------------------
+
+    return {
+      intent: "unknown",
+      task: null,
+      timeText: null,
+      recurring: false,
+    };
+  }
+
+
+  const validated =
+    validateReminderResult(result);
+
+
+  console.log(
+    "📝 Reminder AI result:",
+    validated
   );
+
+
+  return validated;
 };
 
 
@@ -484,7 +799,8 @@ Return ONLY JSON.
 // NORMAL CONVERSATION RESPONSE
 // ============================================================
 //
-// Used when the user is NOT asking for a reminder.
+// This function DOES NOT return JSON.
+// It returns normal natural-language text.
 //
 // ============================================================
 
@@ -497,9 +813,7 @@ const generateConversationResponse = async ({
     const response =
       await client.chat.completions.create({
 
-        model:
-          process.env.OPENROUTER_MODEL ||
-          "openrouter/free",
+        model: MODEL,
 
         messages: [
 
@@ -507,12 +821,12 @@ const generateConversationResponse = async ({
             role: "system",
 
             content: `
-You are a friendly personal AI assistant living inside WhatsApp.
 
-You are NOT only a reminder bot.
+You are a friendly personal AI assistant inside WhatsApp.
 
-Your personality should feel like a helpful personal assistant
-and friend.
+You are a personal assistant and friend, not just a reminder bot.
+
+Your job is to have natural conversations with the user.
 
 Be:
 
@@ -520,32 +834,37 @@ Be:
 - natural
 - concise
 - supportive
+- helpful
 - conversational
-- useful
 
-Do not sound robotic.
+If the user shares good news, celebrate with them.
 
-Do not unnecessarily mention that you are an AI.
+If the user is worried, be supportive.
 
-If the user shares something exciting, respond naturally.
-
-If the user shares something stressful, be supportive.
+If the user is excited, respond with excitement.
 
 If the user asks a question, answer it.
 
-If the user asks for help planning something, help them.
+If the user asks for help planning their day, help them.
 
-If the user talks casually, have a normal conversation.
+If the user talks casually, respond naturally.
 
-Keep WhatsApp responses reasonably short unless the user asks
-for detailed information.
+Use emojis naturally when appropriate.
+
+Do not sound robotic.
+
+Do not repeatedly say "I am an AI".
+
+Keep WhatsApp responses reasonably short.
 
 IMPORTANT:
 
-Do NOT create reminders from this function.
+Do not create reminders from this function.
 
 Reminder creation is handled separately by the reminder system.
-            `,
+
+`,
+
           },
 
           {
@@ -555,6 +874,7 @@ Reminder creation is handled separately by the reminder system.
 
         ],
 
+        max_tokens: 500,
       });
 
 
@@ -580,7 +900,8 @@ Reminder creation is handled separately by the reminder system.
       error.message
     );
 
-    throw error;
+
+    return "I'm here 😊 Tell me what's on your mind.";
   }
 };
 
