@@ -475,6 +475,153 @@ const saveExtractedMemory = async ({
   return null;
 };
 
+/*
+|--------------------------------------------------------------------------
+| UPDATE EXISTING MEMORY
+|--------------------------------------------------------------------------
+*/
+
+const updateMemory = async ({
+  phoneNumber,
+  memory,
+}) => {
+  if (!phoneNumber || !memory) {
+    return null;
+  }
+
+  if (memory.shouldRemember !== true) {
+    return null;
+  }
+
+  const {
+    type,
+    key,
+    value,
+  } = memory;
+
+  if (!type || !key || !value) {
+    return null;
+  }
+
+  const user =
+    await getOrCreateUser(phoneNumber);
+
+  /*
+  |--------------------------------------------------------------------------
+  | FACT
+  |--------------------------------------------------------------------------
+  */
+
+  if (type === "fact") {
+    const newFact = `${key}: ${value}`;
+
+    const existingIndex =
+      user.importantFacts.findIndex(
+        (fact) =>
+          fact
+            .toLowerCase()
+            .startsWith(
+              `${key.toLowerCase()}:`
+            )
+      );
+
+    if (existingIndex !== -1) {
+      user.importantFacts[
+        existingIndex
+      ] = newFact;
+    } else {
+      user.importantFacts.push(
+        newFact
+      );
+    }
+
+    await user.save();
+
+    console.log(
+      `🧠 Fact updated: ${key} = ${value}`
+    );
+
+    return user;
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | PREFERENCE
+  |--------------------------------------------------------------------------
+  */
+
+  if (type === "preference") {
+    const existingPreference =
+      user.preferences.find(
+        (preference) =>
+          preference.key.toLowerCase() ===
+          key.toLowerCase()
+      );
+
+    if (existingPreference) {
+      existingPreference.value =
+        value;
+
+      console.log(
+        `🧠 Preference updated: ${key} = ${value}`
+      );
+    } else {
+      user.preferences.push({
+        key,
+        value,
+      });
+
+      console.log(
+        `🧠 New preference saved: ${key} = ${value}`
+      );
+    }
+
+    await user.save();
+
+    return user;
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | ROUTINE
+  |--------------------------------------------------------------------------
+  */
+
+  if (type === "routine") {
+    const existingRoutine =
+      user.routines.find(
+        (routine) =>
+          routine.name.toLowerCase() ===
+          key.toLowerCase()
+      );
+
+    if (existingRoutine) {
+      existingRoutine.time =
+        value;
+
+      console.log(
+        `🧠 Routine updated: ${key} = ${value}`
+      );
+    } else {
+      user.routines.push({
+        name: key,
+        time: value,
+        days: [],
+        enabled: true,
+      });
+
+      console.log(
+        `🧠 New routine saved: ${key} = ${value}`
+      );
+    }
+
+    await user.save();
+
+    return user;
+  }
+
+  return null;
+};
 
 /*
 |--------------------------------------------------------------------------
@@ -492,4 +639,5 @@ module.exports = {
   updateProfile,
   buildMemoryContext,
   saveExtractedMemory,
+  updateMemory,
 };

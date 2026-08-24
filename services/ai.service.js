@@ -1089,7 +1089,7 @@ ${message}
 
 
 // ============================================================
-// AUTOMATIC MEMORY EXTRACTION
+// MEMORY EXTRACTION
 // ============================================================
 
 const extractMemory = async ({
@@ -1105,17 +1105,11 @@ const extractMemory = async ({
     ) {
 
       return {
-        shouldRemember:
-          false,
-
-        type:
-          null,
-
-        key:
-          null,
-
-        value:
-          null,
+        shouldRemember: false,
+        isUpdate: false,
+        type: null,
+        key: null,
+        value: null,
       };
     }
 
@@ -1133,17 +1127,69 @@ Remember information that is:
 - reasonably stable
 - explicitly stated or strongly implied
 
-Examples:
+Types:
+
+fact
+preference
+routine
+
+
+============================================================
+NEW MEMORY
+============================================================
 
 "My favorite color is blue."
 
-"I usually go for a walk at 7 PM."
+Return:
 
-"I prefer short reminders."
+{
+  "shouldRemember": true,
+  "isUpdate": false,
+  "type": "preference",
+  "key": "favorite_color",
+  "value": "blue"
+}
 
-"I don't like being reminded too early."
 
-These should NOT be remembered:
+============================================================
+MEMORY UPDATE / CORRECTION
+============================================================
+
+If the user corrects something previously remembered:
+
+"Actually, my favorite color is green."
+
+Return:
+
+{
+  "shouldRemember": true,
+  "isUpdate": true,
+  "type": "preference",
+  "key": "favorite_color",
+  "value": "green"
+}
+
+
+Other correction examples:
+
+"No, I prefer tea."
+
+"I meant 6 PM, not 7 PM."
+
+"From now on, remind me at 8 AM."
+
+"Change my walking time to 6 PM."
+
+"I don't like long reminders."
+
+"I prefer short messages."
+
+
+============================================================
+DO NOT REMEMBER
+============================================================
+
+Do NOT remember:
 
 "What's the weather?"
 
@@ -1155,30 +1201,47 @@ These should NOT be remembered:
 
 "Thanks."
 
-Return ONLY JSON.
+
+============================================================
+OUTPUT
+============================================================
 
 If something should be remembered:
 
 {
   "shouldRemember": true,
+  "isUpdate": false,
   "type": "fact | preference | routine",
   "key": "short_snake_case_key",
   "value": "short description"
+}
+
+If something is a correction:
+
+{
+  "shouldRemember": true,
+  "isUpdate": true,
+  "type": "fact | preference | routine",
+  "key": "short_snake_case_key",
+  "value": "new value"
 }
 
 Otherwise:
 
 {
   "shouldRemember": false,
+  "isUpdate": false,
   "type": null,
   "key": null,
   "value": null
 }
 
+
+IMPORTANT:
+
 Do not invent information.
 
-Do not store temporary emotions unless they are clearly
-important or persistent.
+Do not store temporary emotions.
 
 Do not store sensitive personal information.
 
@@ -1188,33 +1251,24 @@ Return JSON only.
 
     const response =
       await client.chat.completions.create({
-        model:
-          MODEL,
+        model: MODEL,
 
-        temperature:
-          0,
+        temperature: 0,
 
         messages: [
           {
-            role:
-              "system",
-
-            content:
-              systemPrompt,
+            role: "system",
+            content: systemPrompt,
           },
 
           {
-            role:
-              "user",
-
-            content:
-              message.trim(),
+            role: "user",
+            content: message.trim(),
           },
         ],
 
         response_format: {
-          type:
-            "json_object",
+          type: "json_object",
         },
       });
 
@@ -1232,56 +1286,48 @@ Return JSON only.
 
 
     const parsed =
-      parseAIJson(
-        content
-      );
+      parseAIJson(content);
 
 
     if (!parsed) {
 
       return {
-        shouldRemember:
-          false,
-
-        type:
-          null,
-
-        key:
-          null,
-
-        value:
-          null,
+        shouldRemember: false,
+        isUpdate: false,
+        type: null,
+        key: null,
+        value: null,
       };
     }
 
 
+    /*
+    Validate shouldRemember
+    */
+
     if (
-      parsed.shouldRemember !==
-      true
+      parsed.shouldRemember !== true
     ) {
 
       return {
-        shouldRemember:
-          false,
-
-        type:
-          null,
-
-        key:
-          null,
-
-        value:
-          null,
+        shouldRemember: false,
+        isUpdate: false,
+        type: null,
+        key: null,
+        value: null,
       };
     }
 
+
+    /*
+    Validate type
+    */
 
     const allowedTypes = [
       "fact",
       "preference",
       "routine",
     ];
-
 
     if (
       !allowedTypes.includes(
@@ -1290,20 +1336,18 @@ Return JSON only.
     ) {
 
       return {
-        shouldRemember:
-          false,
-
-        type:
-          null,
-
-        key:
-          null,
-
-        value:
-          null,
+        shouldRemember: false,
+        isUpdate: false,
+        type: null,
+        key: null,
+        value: null,
       };
     }
 
+
+    /*
+    Validate key
+    */
 
     if (
       typeof parsed.key !==
@@ -1312,20 +1356,18 @@ Return JSON only.
     ) {
 
       return {
-        shouldRemember:
-          false,
-
-        type:
-          null,
-
-        key:
-          null,
-
-        value:
-          null,
+        shouldRemember: false,
+        isUpdate: false,
+        type: null,
+        key: null,
+        value: null,
       };
     }
 
+
+    /*
+    Validate value
+    */
 
     if (
       typeof parsed.value !==
@@ -1334,24 +1376,20 @@ Return JSON only.
     ) {
 
       return {
-        shouldRemember:
-          false,
-
-        type:
-          null,
-
-        key:
-          null,
-
-        value:
-          null,
+        shouldRemember: false,
+        isUpdate: false,
+        type: null,
+        key: null,
+        value: null,
       };
     }
 
 
     const result = {
-      shouldRemember:
-        true,
+      shouldRemember: true,
+
+      isUpdate:
+        parsed.isUpdate === true,
 
       type:
         parsed.type,
@@ -1381,17 +1419,11 @@ Return JSON only.
     );
 
     return {
-      shouldRemember:
-        false,
-
-      type:
-        null,
-
-      key:
-        null,
-
-      value:
-        null,
+      shouldRemember: false,
+      isUpdate: false,
+      type: null,
+      key: null,
+      value: null,
     };
   }
 };
