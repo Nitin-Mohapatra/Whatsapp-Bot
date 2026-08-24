@@ -21,7 +21,6 @@ try {
     repairModule.jsonrepair ||
     repairModule.default ||
     repairModule;
-
 } catch (error) {
   console.warn(
     "⚠️ jsonrepair package not found. JSON repair fallback disabled."
@@ -51,6 +50,43 @@ const defaultRouterResult = {
   task: null,
   timeText: null,
   recurring: false,
+  reminders: [],
+};
+
+// ============================================================
+// NORMALIZE REMINDER
+// ============================================================
+
+const normalizeReminder = (reminder) => {
+  if (
+    !reminder ||
+    typeof reminder !== "object" ||
+    Array.isArray(reminder)
+  ) {
+    return null;
+  }
+
+  const task =
+    typeof reminder.task === "string" &&
+    reminder.task.trim()
+      ? reminder.task.trim()
+      : null;
+
+  const timeText =
+    typeof reminder.timeText === "string" &&
+    reminder.timeText.trim()
+      ? reminder.timeText.trim()
+      : null;
+
+  if (!task || !timeText) {
+    return null;
+  }
+
+  return {
+    task,
+    timeText,
+    recurring: Boolean(reminder.recurring),
+  };
 };
 
 // ============================================================
@@ -94,24 +130,67 @@ const normalizeRouterResult = (result) => {
     Math.min(1, confidence)
   );
 
+  // ==========================================================
+  // MULTIPLE REMINDERS
+  // ==========================================================
+
+  let reminders = [];
+
+  if (Array.isArray(result.reminders)) {
+    reminders = result.reminders
+      .map(normalizeReminder)
+      .filter(Boolean);
+  }
+
+  // ==========================================================
+  // BACKWARD COMPATIBILITY
+  //
+  // If AI returns old:
+  //
+  // task
+  // timeText
+  //
+  // convert it into reminders[]
+  // ==========================================================
+
+  if (
+    reminders.length === 0 &&
+    typeof result.task === "string" &&
+    result.task.trim() &&
+    typeof result.timeText === "string" &&
+    result.timeText.trim()
+  ) {
+    reminders = [
+      {
+        task: result.task.trim(),
+        timeText: result.timeText.trim(),
+        recurring: Boolean(result.recurring),
+      },
+    ];
+  }
+
+  const firstReminder =
+    reminders.length > 0
+      ? reminders[0]
+      : null;
+
   return {
     intent,
 
     confidence,
 
+    // Backward compatible fields
     task:
-      typeof result.task === "string" &&
-      result.task.trim()
-        ? result.task.trim()
-        : null,
+      firstReminder?.task || null,
 
     timeText:
-      typeof result.timeText === "string" &&
-      result.timeText.trim()
-        ? result.timeText.trim()
-        : null,
+      firstReminder?.timeText || null,
 
-    recurring: Boolean(result.recurring),
+    recurring:
+      firstReminder?.recurring || false,
+
+    // New multiple-reminder field
+    reminders,
   };
 };
 
@@ -132,24 +211,48 @@ const isAcknowledgmentMessage = (message) => {
     .replace(/[.!?,]+$/g, "")
     .trim();
 
+  /*
+   IMPORTANT:
+
+   We intentionally DO NOT include:
+
+   ok
+   okay
+   yes
+   yep
+   yeah
+   sure
+   thanks
+
+   because those are normal conversational messages.
+
+   Example:
+
+   User: "Reminder: drink water"
+
+   User: "okay"
+
+   "okay" should NOT complete the reminder.
+  */
+
   const acknowledgmentPatterns = [
     "done",
-    "ok",
-    "okay",
-    "yes",
-    "yep",
-    "yeah",
-    "sure",
     "completed",
     "complete",
     "finished",
     "finish",
-    "got it",
-    "got that",
     "all done",
     "task done",
     "work done",
+    "i'm done",
+    "im done",
+    "i am done",
+    "i completed it",
+    "completed it",
+    "task completed",
+    "work completed",
 
+    // Thumbs-up
     "👍",
     "👍🏻",
     "👍🏼",
@@ -157,12 +260,20 @@ const isAcknowledgmentMessage = (message) => {
     "👍🏾",
     "👍🏿",
 
+    // OK hand
     "👌",
     "👌🏻",
     "👌🏼",
     "👌🏽",
     "👌🏾",
     "👌🏿",
+
+    // Check marks
+    "✅",
+    "☑️",
+    "☑",
+    "✔️",
+    "✔",
   ];
 
   return acknowledgmentPatterns.includes(
@@ -216,15 +327,6 @@ const extractJsonCandidate = (content) => {
     .replace(/\s*```$/i, "")
     .trim();
 
-  /*
-  Sometimes the model returns:
-
-  Here is the JSON:
-  {
-    ...
-  }
-  */
-
   const firstBrace =
     cleaned.indexOf("{");
 
@@ -259,16 +361,7 @@ const parseAIJson = (content) => {
 
   const raw = content.trim();
 
-  /*
-  Some OpenRouter models have previously returned:
-
-  User Safety: safe
-
-  instead of JSON.
-
-  Never treat that as valid router output.
-  */
-
+  // Prevent OpenRouter safety text from being treated as JSON
   if (
     raw
       .toLowerCase()
@@ -292,9 +385,9 @@ const parseAIJson = (content) => {
     return null;
   }
 
-  // ----------------------------------------------------------
-  // NORMAL JSON PARSE
-  // ----------------------------------------------------------
+  // ==========================================================
+  // NORMAL JSON
+  // ==========================================================
 
   try {
     return JSON.parse(candidate);
@@ -304,9 +397,9 @@ const parseAIJson = (content) => {
     );
   }
 
-  // ----------------------------------------------------------
-  // JSONREPAIR FALLBACK
-  // ----------------------------------------------------------
+  // ==========================================================
+  // JSON REPAIR
+  // ==========================================================
 
   if (jsonrepair) {
     try {
@@ -321,7 +414,6 @@ const parseAIJson = (content) => {
       );
 
       return parsed;
-
     } catch (error) {
       console.error(
         "❌ jsonrepair failed:",
@@ -351,9 +443,9 @@ const localFallbackRouter = (message) => {
     };
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // ACKNOWLEDGMENT
-  // ----------------------------------------------------------
+  // ==========================================================
 
   if (
     isAcknowledgmentMessage(message)
@@ -369,12 +461,14 @@ const localFallbackRouter = (message) => {
       timeText: null,
 
       recurring: false,
+
+      reminders: [],
     };
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // REMINDER
-  // ----------------------------------------------------------
+  // ==========================================================
 
   if (
     looksLikeReminder(message)
@@ -390,12 +484,14 @@ const localFallbackRouter = (message) => {
       timeText: null,
 
       recurring: false,
+
+      reminders: [],
     };
   }
 
-  // ----------------------------------------------------------
+  // ==========================================================
   // NORMAL CONVERSATION
-  // ----------------------------------------------------------
+  // ==========================================================
 
   return {
     intent:
@@ -408,6 +504,8 @@ const localFallbackRouter = (message) => {
     timeText: null,
 
     recurring: false,
+
+    reminders: [],
   };
 };
 
@@ -427,6 +525,7 @@ const parseReminder = async (message) => {
         task: null,
         timeText: null,
         recurring: false,
+        reminders: [],
       };
     }
 
@@ -448,6 +547,8 @@ const parseReminder = async (message) => {
         timeText: null,
 
         recurring: false,
+
+        reminders: [],
       };
 
       console.log(
@@ -486,7 +587,7 @@ ALLOWED INTENTS
 
 1. create_reminder
 
-The user wants to create a NEW reminder.
+The user wants to create one OR MORE new reminders.
 
 Examples:
 
@@ -496,33 +597,68 @@ Examples:
 
 "Remind me to study every day at 8 PM"
 
+IMPORTANT:
+
+A SINGLE USER MESSAGE CAN CONTAIN MULTIPLE REMINDERS.
+
+Example:
+
+"Tomorrow remind me to complete CN video at 10 AM,
+then complete Growtern work at 12 PM,
+and complete Bhayasutra work at 2 PM."
+
+Return THREE reminders.
 
 ============================================================
-
 2. acknowledge_reminder
+============================================================
 
-The user is acknowledging/completing a reminder.
+The user clearly indicates that a reminder/task has been completed.
 
 Examples:
 
 "done"
 
-"okay"
-
-"ok"
-
-"yes"
-
 "completed"
+
+"I completed it"
+
+"task done"
 
 "👍"
 
 "👌"
 
+"✅"
+
+"☑️"
+
+"✔️"
+
+IMPORTANT:
+
+Do NOT classify these as acknowledgment:
+
+"ok"
+
+"okay"
+
+"yes"
+
+"yep"
+
+"yeah"
+
+"sure"
+
+"thanks"
+
+Those are normal conversation unless they explicitly say
+the task was completed.
 
 ============================================================
-
 3. conversation
+============================================================
 
 Normal conversation.
 
@@ -543,12 +679,11 @@ IMPORTANT:
 A statement about a personal habit or routine is still
 conversation at the ROUTER level.
 
-The memory system will separately detect and save the routine.
-
+The memory system separately detects and saves the routine.
 
 ============================================================
-
 4. cancel_reminder
+============================================================
 
 The user explicitly wants to cancel an existing reminder.
 
@@ -556,10 +691,9 @@ Example:
 
 "Cancel my reminder to call Mom"
 
-
 ============================================================
-
 5. reschedule_reminder
+============================================================
 
 The user explicitly wants to change an EXISTING REMINDER.
 
@@ -571,7 +705,6 @@ Examples:
 
 "Change my reminder to tomorrow"
 
-
 IMPORTANT:
 
 Do NOT classify a simple correction of a personal routine
@@ -579,7 +712,6 @@ as reschedule_reminder.
 
 Example:
 
-User:
 "I usually drink water at 1:20 AM"
 
 Then:
@@ -590,29 +722,73 @@ This is NOT reschedule_reminder.
 
 It is normal conversation / memory correction.
 
-The memory system will understand that "it" refers to the
-previously mentioned drinking-water routine.
-
-
 ============================================================
-
 6. unknown
+============================================================
 
 Use only when the message cannot reasonably be classified.
 
+============================================================
+MULTIPLE REMINDER OUTPUT
+============================================================
 
-============================================================
-OUTPUT FORMAT
-============================================================
+For ONE reminder:
 
 {
-  "intent": "create_reminder | acknowledge_reminder | conversation | cancel_reminder | reschedule_reminder | unknown",
-  "confidence": 0.0,
-  "task": "string or null",
-  "timeText": "string or null",
-  "recurring": false
+  "intent": "create_reminder",
+  "confidence": 1,
+  "reminders": [
+    {
+      "task": "drink water",
+      "timeText": "tomorrow at 12 PM",
+      "recurring": false
+    }
+  ]
 }
 
+For MULTIPLE reminders:
+
+{
+  "intent": "create_reminder",
+  "confidence": 1,
+  "reminders": [
+    {
+      "task": "complete CN video",
+      "timeText": "tomorrow at 10 AM",
+      "recurring": false
+    },
+    {
+      "task": "complete Growtern work",
+      "timeText": "tomorrow at 12 PM",
+      "recurring": false
+    },
+    {
+      "task": "complete Bhayasutra work",
+      "timeText": "tomorrow at 2 PM",
+      "recurring": false
+    }
+  ]
+}
+
+============================================================
+OTHER INTENTS
+============================================================
+
+For conversation:
+
+{
+  "intent": "conversation",
+  "confidence": 0.9,
+  "reminders": []
+}
+
+For acknowledgment:
+
+{
+  "intent": "acknowledge_reminder",
+  "confidence": 1,
+  "reminders": []
+}
 
 ============================================================
 IMPORTANT RULES
@@ -621,20 +797,15 @@ IMPORTANT RULES
 - Do not invent information.
 - Do not turn normal conversation into a reminder.
 - Do not turn routine corrections into reminder rescheduling.
-- "Actually..."
-- "Sorry..."
-- "I meant..."
-- "No, it is..."
-- "Change that..."
-- "Make that..."
-- "It is actually..."
-
-can be corrections to previous conversation.
-
-Unless the user clearly refers to an existing reminder,
-do NOT classify these as reschedule_reminder.
-
-Return JSON only.
+- Do not treat "okay" as task completion.
+- Do not treat "yes" as task completion.
+- Do not treat "thanks" as task completion.
+- Multiple reminders MUST be returned inside reminders[].
+- Each reminder must have its own task and timeText.
+- Keep the original meaning of the user's task.
+- Do not merge separate reminders.
+- Do not drop reminders.
+- Return JSON only.
 `;
 
     let response;
@@ -666,7 +837,6 @@ Return JSON only.
             type: "json_object",
           },
         });
-
     } catch (structuredError) {
       console.warn(
         "⚠️ Structured JSON request failed. Retrying without response_format..."
@@ -758,37 +928,40 @@ Return JSON only.
                 role: "system",
 
                 content: `
-Extract a reminder from the user's message.
+Extract ALL reminders from the user's message.
 
-Return ONLY JSON:
+A single message may contain multiple reminders.
 
-{
-  "intent": "create_reminder",
-  "confidence": 1,
-  "task": "task",
-  "timeText": "time expression",
-  "recurring": false
-}
+Return ONLY JSON.
 
-For recurring reminders:
+Example:
 
 {
   "intent": "create_reminder",
   "confidence": 1,
-  "task": "task",
-  "timeText": "recurring expression",
-  "recurring": true
+  "reminders": [
+    {
+      "task": "complete CN video",
+      "timeText": "tomorrow at 10 AM",
+      "recurring": false
+    },
+    {
+      "task": "complete Growtern work",
+      "timeText": "tomorrow at 12 PM",
+      "recurring": false
+    }
+  ]
 }
 
-If you cannot determine the task and time:
+If no valid reminder can be extracted:
 
 {
   "intent": "unknown",
   "confidence": 0,
-  "task": null,
-  "timeText": null,
-  "recurring": false
+  "reminders": []
 }
+
+Do not merge multiple reminders.
 
 Return JSON only.
 `,
@@ -827,7 +1000,8 @@ Return JSON only.
           );
 
         if (
-          normalizedExtraction
+          normalizedExtraction &&
+          normalizedExtraction.reminders.length > 0
         ) {
           console.log(
             "🧠 AI Reminder Extraction Result:",
@@ -836,7 +1010,6 @@ Return JSON only.
 
           return normalizedExtraction;
         }
-
       } catch (fallbackAIError) {
         console.error(
           "❌ Reminder extraction failed:",
@@ -877,10 +1050,6 @@ const generateConversationReply = async ({
   try {
     let memoryContext = "";
 
-    // ========================================================
-    // LOAD MONGODB MEMORY
-    // ========================================================
-
     if (phoneNumber) {
       try {
         memoryContext =
@@ -892,7 +1061,6 @@ const generateConversationReply = async ({
           "🧠 User memory loaded for:",
           phoneNumber
         );
-
       } catch (memoryError) {
         console.error(
           "⚠️ Could not load user memory:",
@@ -914,10 +1082,6 @@ RECENT CONTEXT:
 
 ${context || "No additional context available."}
 `;
-
-    // ========================================================
-    // CONVERSATION PROMPT
-    // ========================================================
 
     const systemPrompt = `
 You are a friendly personal WhatsApp assistant.
@@ -1021,10 +1185,6 @@ CURRENT MESSAGE
 ${message}
 `;
 
-    // ========================================================
-    // AI CALL
-    // ========================================================
-
     const response =
       await client.chat.completions.create({
         model: MODEL,
@@ -1092,10 +1252,6 @@ const extractMemory = async ({
       };
     }
 
-    // ========================================================
-    // LOAD EXISTING MEMORY + CONTEXT
-    // ========================================================
-
     let memoryContext =
       "No stored memory available.";
 
@@ -1109,7 +1265,6 @@ const extractMemory = async ({
         console.log(
           "🧠 Memory context loaded for extraction."
         );
-
       } catch (memoryError) {
         console.error(
           "⚠️ Memory context loading failed:",
@@ -1118,18 +1273,13 @@ const extractMemory = async ({
       }
     }
 
-    // ========================================================
-    // MEMORY EXTRACTION PROMPT
-    // ========================================================
-
     const systemPrompt = `
 You are the memory extraction system for a personal AI assistant.
 
 Your job is to determine whether the user's message contains
 information that should be remembered.
 
-You have access to the user's existing memory and recent
-conversation.
+You have access to the user's existing memory.
 
 ============================================================
 MEMORY TYPES
@@ -1140,7 +1290,6 @@ Allowed types:
 fact
 preference
 routine
-
 
 ============================================================
 FACT
@@ -1160,7 +1309,6 @@ Return:
   "value": "Nitin"
 }
 
-
 ============================================================
 PREFERENCE
 ============================================================
@@ -1178,7 +1326,6 @@ Return:
   "key": "favorite_color",
   "value": "green"
 }
-
 
 ============================================================
 ROUTINE
@@ -1198,7 +1345,6 @@ Return:
   "value": "1:20 AM"
 }
 
-
 Example:
 
 "I usually walk at 7 PM."
@@ -1213,9 +1359,8 @@ Return:
   "value": "7 PM"
 }
 
-
 ============================================================
-IMPORTANT: CONTEXTUAL CORRECTIONS
+CONTEXTUAL CORRECTIONS
 ============================================================
 
 The user may correct something without repeating the subject.
@@ -1223,18 +1368,14 @@ The user may correct something without repeating the subject.
 Example:
 
 Previous:
-
-User:
 "I usually drink water at 1:20 AM."
 
 Current:
-
-User:
 "Sorry it is 1:35 AM."
 
-The current message means:
+This means:
 
-Update the existing "drink_water" routine.
+Update drink_water.
 
 Return:
 
@@ -1245,53 +1386,6 @@ Return:
   "key": "drink_water",
   "value": "1:35 AM"
 }
-
-
-Another example:
-
-Previous:
-
-User:
-"I usually walk at 7 PM."
-
-Current:
-
-User:
-"Actually it is 6 PM."
-
-Return:
-
-{
-  "shouldRemember": true,
-  "isUpdate": true,
-  "type": "routine",
-  "key": "walking",
-  "value": "6 PM"
-}
-
-
-Another example:
-
-Previous:
-
-User:
-"My favorite color is blue."
-
-Current:
-
-User:
-"Actually it is green."
-
-Return:
-
-{
-  "shouldRemember": true,
-  "isUpdate": true,
-  "type": "preference",
-  "key": "favorite_color",
-  "value": "green"
-}
-
 
 ============================================================
 CORRECTION PHRASES
@@ -1310,28 +1404,6 @@ Pay special attention to:
 - not
 - instead
 - from now on
-
-
-============================================================
-VERY IMPORTANT
-============================================================
-
-A correction to a routine is NOT necessarily a reminder
-reschedule.
-
-For example:
-
-"I usually drink water at 1:20 AM."
-
-Then:
-
-"Sorry it is 1:35 AM."
-
-This is a routine update.
-
-Do NOT create a reminder.
-
-Do NOT classify it as reminder rescheduling.
 
 ============================================================
 DO NOT REMEMBER
@@ -1369,7 +1441,7 @@ ${message.trim()}
 OUTPUT
 ============================================================
 
-If the message contains useful memory:
+If useful memory exists:
 
 {
   "shouldRemember": true,
@@ -1379,7 +1451,7 @@ If the message contains useful memory:
   "value": "short value"
 }
 
-For a correction/update:
+For an update:
 
 {
   "shouldRemember": true,
@@ -1389,7 +1461,7 @@ For a correction/update:
   "value": "new value"
 }
 
-If nothing should be remembered:
+Otherwise:
 
 {
   "shouldRemember": false,
@@ -1401,10 +1473,6 @@ If nothing should be remembered:
 
 Return JSON only.
 `;
-
-    // ========================================================
-    // AI CALL
-    // ========================================================
 
     let response;
 
@@ -1433,7 +1501,6 @@ Return JSON only.
             type: "json_object",
           },
         });
-
     } catch (structuredError) {
       console.warn(
         "⚠️ Memory structured JSON request failed. Retrying..."
@@ -1471,10 +1538,6 @@ Return JSON only.
       content
     );
 
-    // ========================================================
-    // PARSE
-    // ========================================================
-
     const parsed =
       parseAIJson(content);
 
@@ -1492,10 +1555,6 @@ Return JSON only.
       };
     }
 
-    // ========================================================
-    // VALIDATE shouldRemember
-    // ========================================================
-
     if (
       parsed.shouldRemember !== true
     ) {
@@ -1507,10 +1566,6 @@ Return JSON only.
         value: null,
       };
     }
-
-    // ========================================================
-    // VALIDATE TYPE
-    // ========================================================
 
     const allowedTypes = [
       "fact",
@@ -1532,10 +1587,6 @@ Return JSON only.
       };
     }
 
-    // ========================================================
-    // VALIDATE KEY
-    // ========================================================
-
     if (
       typeof parsed.key !== "string" ||
       !parsed.key.trim()
@@ -1548,10 +1599,6 @@ Return JSON only.
         value: null,
       };
     }
-
-    // ========================================================
-    // VALIDATE VALUE
-    // ========================================================
 
     if (
       typeof parsed.value !== "string" ||
@@ -1630,4 +1677,9 @@ module.exports = {
   generateConversationResponse,
 
   extractMemory,
+
+  // Exported for testing/debugging if required
+  isAcknowledgmentMessage,
+
+  looksLikeReminder,
 };

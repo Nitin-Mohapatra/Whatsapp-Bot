@@ -64,21 +64,18 @@ const transcribeAudioWithSarvam = async ({
       }
     );
 
-    // Saaras v3
     formData.append(
       "model",
       process.env.SARVAM_STT_MODEL ||
       "saaras:v3"
     );
 
-    // Automatically detect language.
     formData.append(
       "language_code",
       process.env.SARVAM_LANGUAGE_CODE ||
       "unknown"
     );
 
-    // Keep original language/code-mixed speech.
     formData.append(
       "mode",
       process.env.SARVAM_STT_MODE ||
@@ -108,36 +105,29 @@ const transcribeAudioWithSarvam = async ({
         }
       );
 
-
     console.log(
       "🎙️ Sarvam STT response:",
       response.data
     );
 
-
     const transcript =
       response.data?.transcript?.trim();
 
-
     if (!transcript) {
-
       throw new Error(
         "Sarvam returned an empty transcript"
       );
     }
-
 
     console.log(
       "📝 Voice transcript:",
       transcript
     );
 
-
     console.log(
       "🌐 Detected language:",
       response.data?.language_code
     );
-
 
     return {
       transcript,
@@ -181,19 +171,11 @@ const downloadWhatsAppMedia = async (
       mediaId
     );
 
-
     if (!process.env.WHATSAPP_ACCESS_TOKEN) {
-
       throw new Error(
         "WHATSAPP_ACCESS_TOKEN is not configured"
       );
     }
-
-
-    // --------------------------------------------------
-    // STEP 1
-    // Ask Meta for the actual media URL
-    // --------------------------------------------------
 
     const mediaResponse =
       await axios.get(
@@ -209,23 +191,18 @@ const downloadWhatsAppMedia = async (
         }
       );
 
-
     const mediaUrl =
       mediaResponse.data?.url;
-
 
     const mimeType =
       mediaResponse.data?.mime_type ||
       "audio/ogg";
 
-
     if (!mediaUrl) {
-
       throw new Error(
         "WhatsApp did not return a media URL"
       );
     }
-
 
     console.log(
       "🔗 WhatsApp media URL received"
@@ -235,12 +212,6 @@ const downloadWhatsAppMedia = async (
       "🎵 MIME type:",
       mimeType
     );
-
-
-    // --------------------------------------------------
-    // STEP 2
-    // Download actual audio file
-    // --------------------------------------------------
 
     const audioResponse =
       await axios.get(
@@ -259,19 +230,16 @@ const downloadWhatsAppMedia = async (
         }
       );
 
-
     const audioBuffer =
       Buffer.from(
         audioResponse.data
       );
-
 
     console.log(
       "✅ WhatsApp audio downloaded:",
       audioBuffer.length,
       "bytes"
     );
-
 
     return {
       audioBuffer,
@@ -299,7 +267,6 @@ const downloadWhatsAppMedia = async (
 
 // ========================================
 // GET /api/whatsapp/webhook
-// Meta uses this to verify our webhook
 // ========================================
 
 const verifyWebhook = (
@@ -316,11 +283,9 @@ const verifyWebhook = (
   const challenge =
     req.query["hub.challenge"];
 
-
   console.log(
     "Webhook verification request received"
   );
-
 
   if (
     mode === "subscribe" &&
@@ -337,7 +302,6 @@ const verifyWebhook = (
       .send(challenge);
   }
 
-
   console.log(
     "Webhook verification failed"
   );
@@ -348,7 +312,6 @@ const verifyWebhook = (
 
 // ========================================
 // POST /api/whatsapp/webhook
-// Meta sends incoming messages here
 // ========================================
 
 const receiveWebhook =
@@ -368,13 +331,11 @@ const receiveWebhook =
         )
       );
 
-
       const body =
         req.body;
 
-
       // ========================================
-      // MAKE SURE THIS IS A WHATSAPP EVENT
+      // MAKE SURE THIS IS WHATSAPP EVENT
       // ========================================
 
       if (
@@ -386,7 +347,6 @@ const receiveWebhook =
           404
         );
       }
-
 
       // ========================================
       // EXTRACT MESSAGE
@@ -404,10 +364,7 @@ const receiveWebhook =
       const message =
         value?.messages?.[0];
 
-
-      // Meta can send status updates
-      // instead of actual messages.
-
+      // Status updates etc.
       if (!message) {
 
         console.log(
@@ -418,7 +375,6 @@ const receiveWebhook =
           200
         );
       }
-
 
       // ========================================
       // MESSAGE INFORMATION
@@ -433,7 +389,6 @@ const receiveWebhook =
       const messageType =
         message.type;
 
-
       // ========================================
       // DUPLICATE CHECK
       // ========================================
@@ -443,7 +398,6 @@ const receiveWebhook =
           whatsappMessageId:
             messageId,
         });
-
 
       if (
         existingMessage
@@ -459,21 +413,8 @@ const receiveWebhook =
         );
       }
 
-
       // ========================================
-      // TEXT WILL EVENTUALLY CONTAIN:
-      //
-      // TEXT MESSAGE
-      //      ↓
-      // message.text.body
-      //
-      // VOICE MESSAGE
-      //      ↓
-      // WhatsApp media
-      //      ↓
-      // Sarvam
-      //      ↓
-      // transcript
+      // MESSAGE TEXT
       // ========================================
 
       let text = "";
@@ -482,9 +423,8 @@ const receiveWebhook =
 
       let voiceRequestId = null;
 
-
       // ========================================
-      // TEXT MESSAGE
+      // TEXT
       // ========================================
 
       if (
@@ -496,9 +436,8 @@ const receiveWebhook =
           "";
       }
 
-
       // ========================================
-      // AUDIO / VOICE MESSAGE
+      // AUDIO / VOICE
       // ========================================
 
       else if (
@@ -509,10 +448,8 @@ const receiveWebhook =
           "🎙️ WhatsApp voice message received"
         );
 
-
         const mediaId =
           message.audio?.id;
-
 
         if (!mediaId) {
 
@@ -520,23 +457,15 @@ const receiveWebhook =
             "❌ Voice message does not contain media ID"
           );
 
-
           await sendWhatsAppMessage(
             from,
-
             "Sorry, I couldn't access that voice message. Please try sending it again."
           );
-
 
           return res.sendStatus(
             200
           );
         }
-
-
-        // ----------------------------------------
-        // DOWNLOAD AUDIO FROM WHATSAPP
-        // ----------------------------------------
 
         const {
           audioBuffer,
@@ -547,20 +476,12 @@ const receiveWebhook =
             mediaId
           );
 
-
-        // ----------------------------------------
-        // SEND AUDIO TO SARVAM
-        // ----------------------------------------
-
         const transcription =
           await transcribeAudioWithSarvam({
             audioBuffer,
-
             mimeType,
-
             fileName,
           });
-
 
         text =
           transcription.transcript;
@@ -571,16 +492,10 @@ const receiveWebhook =
         voiceRequestId =
           transcription.requestId;
 
-
         console.log(
           "🗣️ Transcribed voice:",
           text
         );
-
-
-        // ----------------------------------------
-        // If Sarvam understood nothing
-        // ----------------------------------------
 
         if (
           !text ||
@@ -589,22 +504,18 @@ const receiveWebhook =
 
           await sendWhatsAppMessage(
             from,
-
             "I couldn't understand the voice message. Could you please say that again? 🎙️"
           );
-
 
           return res.sendStatus(
             200
           );
         }
 
-
         console.log(
           "🎙️ Voice successfully converted to text"
         );
       }
-
 
       // ========================================
       // OTHER MESSAGE TYPES
@@ -616,19 +527,15 @@ const receiveWebhook =
           `Message type "${messageType}" is not supported yet`
         );
 
-
         await sendWhatsAppMessage(
           from,
-
           "I can currently understand text and voice messages. 😊"
         );
-
 
         return res.sendStatus(
           200
         );
       }
-
 
       console.log(
         "From:",
@@ -645,7 +552,6 @@ const receiveWebhook =
         text
       );
 
-
       // ========================================
       // FINAL TEXT SAFETY CHECK
       // ========================================
@@ -658,30 +564,18 @@ const receiveWebhook =
           "No usable text after processing"
         );
 
-
         await sendWhatsAppMessage(
           from,
-
           "I couldn't understand that message. Could you try again? 😊"
         );
-
 
         return res.sendStatus(
           200
         );
       }
 
-
       // ========================================
       // SAVE INCOMING MESSAGE
-      //
-      // IMPORTANT:
-      //
-      // For voice messages, `text` contains
-      // the Sarvam transcript.
-      //
-      // So the rest of the system does NOT
-      // need a separate voice pipeline.
       // ========================================
 
       await Message.create({
@@ -708,14 +602,12 @@ const receiveWebhook =
           body,
       });
 
-
       console.log(
         "✅ Incoming message saved"
       );
 
-
       // ========================================
-      // SAVE USER MESSAGE TO SHORT-TERM MEMORY
+      // SAVE SHORT-TERM MEMORY
       // ========================================
 
       try {
@@ -743,12 +635,8 @@ const receiveWebhook =
         );
       }
 
-
       // ========================================
       // AI ROUTER
-      //
-      // TEXT + VOICE BOTH COME HERE
-      //
       // ========================================
 
       const aiResult =
@@ -756,12 +644,14 @@ const receiveWebhook =
           text
         );
 
-
       console.log(
         "🧠 AI Router Result:",
-        aiResult
+        JSON.stringify(
+          aiResult,
+          null,
+          2
+        )
       );
-
 
       // ========================================
       // SAFETY CHECK
@@ -777,28 +667,23 @@ const receiveWebhook =
           aiResult
         );
 
-
         await sendWhatsAppMessage(
           from,
-
           "Sorry, I couldn't understand that. Could you try again?"
         );
-
 
         return res.sendStatus(
           200
         );
       }
 
-
       // ========================================
-      // ROUTE USER INTENT
+      // ROUTE INTENT
       // ========================================
 
       switch (
-      aiResult.intent
+        aiResult.intent
       ) {
-
 
         // ======================================
         // CREATE REMINDER
@@ -810,71 +695,255 @@ const receiveWebhook =
             "📅 Intent: CREATE_REMINDER"
           );
 
+          // --------------------------------------
+          // GET REMINDER ARRAY
+          // --------------------------------------
 
-          const result =
-            await processReminderMessage({
+          const reminders =
+            Array.isArray(
+              aiResult.reminders
+            )
+              ? aiResult.reminders
+              : [];
 
-              phoneNumber:
-                from,
+          // --------------------------------------
+          // BACKWARD COMPATIBILITY
+          // --------------------------------------
 
-              message:
-                text,
-
-            });
-
-
-          console.log(
-            "Reminder pipeline result:",
-            result
-          );
-
+          let normalizedReminders =
+            reminders;
 
           if (
-            !result ||
-            !result.isReminder ||
-            !result.reminder
+            normalizedReminders.length === 0 &&
+            aiResult.task &&
+            aiResult.timeText
+          ) {
+
+            normalizedReminders = [
+              {
+                task:
+                  aiResult.task,
+
+                timeText:
+                  aiResult.timeText,
+
+                recurring:
+                  Boolean(
+                    aiResult.recurring
+                  ),
+              },
+            ];
+          }
+
+          console.log(
+            `📋 Reminders detected: ${normalizedReminders.length}`
+          );
+
+          // --------------------------------------
+          // NO REMINDER DATA
+          // --------------------------------------
+
+          if (
+            normalizedReminders.length === 0
           ) {
 
             console.log(
-              "⚠️ Reminder intent detected but reminder could not be created"
+              "⚠️ Reminder intent detected but no reminders were extracted"
             );
-
 
             await sendWhatsAppMessage(
               from,
 
-              "I understood that you want a reminder, but I couldn't figure out when to remind you. Could you tell me the time or date?"
+              "I understood that you want reminders, but I couldn't figure out the task and time. Could you tell me what I should remind you about and when?"
             );
-
 
             return res.sendStatus(
               200
             );
           }
 
+          // --------------------------------------
+          // CREATE EACH REMINDER
+          // --------------------------------------
 
-          const reminder =
-            result.reminder;
+          const createdReminders = [];
 
+          const failedReminders = [];
 
-          const reply =
-            `✅ Reminder created!\n\n` +
-            `📝 Task: ${reminder.task}\n` +
-            `⏰ Type: ${reminder.reminderType}\n\n` +
-            `I'll remind you at the scheduled time.`;
+          for (
+            let i = 0;
+            i < normalizedReminders.length;
+            i++
+          ) {
 
+            const reminderData =
+              normalizedReminders[i];
+
+            console.log(
+              `⏰ Creating reminder ${i + 1}/${normalizedReminders.length}:`,
+              reminderData
+            );
+
+            try {
+
+              /*
+              IMPORTANT:
+
+              The existing reminder pipeline accepts
+              one reminder message at a time.
+
+              So we convert each AI reminder into a
+              normal reminder sentence and pass it
+              through the existing pipeline.
+              */
+
+              const reminderMessage =
+                `Remind me to ${reminderData.task} ${reminderData.timeText}`;
+
+              console.log(
+                "📨 Reminder pipeline input:",
+                reminderMessage
+              );
+
+              const result =
+                await processReminderMessage({
+
+                  phoneNumber:
+                    from,
+
+                  message:
+                    reminderMessage,
+
+                });
+
+              console.log(
+                "Reminder pipeline result:",
+                result
+              );
+
+              if (
+                result &&
+                result.isReminder &&
+                result.reminder
+              ) {
+
+                createdReminders.push(
+                  result.reminder
+                );
+
+                console.log(
+                  "✅ Reminder created:",
+                  result.reminder.task
+                );
+
+              } else {
+
+                failedReminders.push(
+                  reminderData
+                );
+
+                console.log(
+                  "❌ Reminder could not be created:",
+                  reminderData
+                );
+              }
+
+            } catch (reminderError) {
+
+              console.error(
+                "❌ Reminder creation failed:",
+                reminderError.message
+              );
+
+              failedReminders.push(
+                reminderData
+              );
+            }
+          }
+
+          // --------------------------------------
+          // NO REMINDERS CREATED
+          // --------------------------------------
+
+          if (
+            createdReminders.length === 0
+          ) {
+
+            await sendWhatsAppMessage(
+              from,
+
+              "I understood the reminders, but I couldn't create them. Please try again."
+            );
+
+            return res.sendStatus(
+              200
+            );
+          }
+
+          // --------------------------------------
+          // BUILD RESPONSE
+          // --------------------------------------
+
+          let reply =
+            `✅ ${createdReminders.length === 1
+              ? "Reminder created!"
+              : `${createdReminders.length} reminders created!`
+            }\n\n`;
+
+          createdReminders.forEach(
+            (
+              reminder,
+              index
+            ) => {
+
+              reply +=
+                `📝 ${index + 1}. ${reminder.task}\n`;
+
+              reply +=
+                `⏰ ${reminder.reminderType}\n\n`;
+            }
+          );
+
+          // --------------------------------------
+          // PARTIAL FAILURE
+          // --------------------------------------
+
+          if (
+            failedReminders.length > 0
+          ) {
+
+            reply +=
+              `⚠️ I couldn't create ${failedReminders.length} reminder${failedReminders.length > 1 ? "s" : ""}.\n`;
+
+            failedReminders.forEach(
+              (
+                reminder,
+                index
+              ) => {
+
+                reply +=
+                  `• ${reminder.task} — ${reminder.timeText}\n`;
+              }
+            );
+          } else {
+
+            reply +=
+              "I'll remind you at the scheduled times. 😊";
+          }
+
+          // --------------------------------------
+          // SEND RESPONSE
+          // --------------------------------------
 
           await sendWhatsAppMessage(
             from,
             reply
           );
 
-
           return res.sendStatus(
             200
           );
         }
-
 
         // ======================================
         // ACKNOWLEDGE REMINDER
@@ -886,12 +955,10 @@ const receiveWebhook =
             "✅ Intent: ACKNOWLEDGE_REMINDER"
           );
 
-
           const acknowledgmentResult =
             await acknowledgeLatestReminder(
               from
             );
-
 
           if (
             acknowledgmentResult &&
@@ -905,7 +972,6 @@ const receiveWebhook =
                 .task
             );
 
-
             await sendWhatsAppMessage(
               from,
 
@@ -918,7 +984,6 @@ const receiveWebhook =
               "ℹ️ No pending reminder found to acknowledge"
             );
 
-
             await sendWhatsAppMessage(
               from,
 
@@ -926,12 +991,10 @@ const receiveWebhook =
             );
           }
 
-
           return res.sendStatus(
             200
           );
         }
-
 
         // ======================================
         // NORMAL CONVERSATION
@@ -942,7 +1005,6 @@ const receiveWebhook =
           console.log(
             "💬 Intent: CONVERSATION"
           );
-
 
           const reply =
             await generateConversationResponse({
@@ -955,18 +1017,15 @@ const receiveWebhook =
 
             });
 
-
           console.log(
             "🤖 AI conversation response:",
             reply
           );
 
-
           await sendWhatsAppMessage(
             from,
             reply
           );
-
 
           // --------------------------------------
           // Save assistant response
@@ -997,7 +1056,6 @@ const receiveWebhook =
             );
           }
 
-
           // --------------------------------------
           // Extract long-term memory
           // --------------------------------------
@@ -1010,17 +1068,14 @@ const receiveWebhook =
                 10
               );
 
-
             const existingMemory =
               await buildMemoryContext(
                 from
               );
 
-
             console.log(
               "🧠 Existing memory loaded for extraction"
             );
-
 
             const memory =
               await extractMemory({
@@ -1037,12 +1092,10 @@ const receiveWebhook =
 
               });
 
-
             console.log(
               "🧠 Context-aware extracted memory:",
               memory
             );
-
 
             if (
               memory &&
@@ -1058,7 +1111,6 @@ const receiveWebhook =
                   memory.key
                 );
 
-
                 await updateMemory({
 
                   phoneNumber:
@@ -1067,7 +1119,6 @@ const receiveWebhook =
                   memory,
 
                 });
-
 
                 console.log(
                   "✅ Existing memory updated successfully"
@@ -1080,7 +1131,6 @@ const receiveWebhook =
                   memory.key
                 );
 
-
                 await saveExtractedMemory({
 
                   phoneNumber:
@@ -1089,7 +1139,6 @@ const receiveWebhook =
                   memory,
 
                 });
-
 
                 console.log(
                   "✅ New memory saved successfully"
@@ -1107,12 +1156,10 @@ const receiveWebhook =
             );
           }
 
-
           return res.sendStatus(
             200
           );
         }
-
 
         // ======================================
         // CANCEL REMINDER
@@ -1124,19 +1171,16 @@ const receiveWebhook =
             "🗑️ Intent: CANCEL_REMINDER"
           );
 
-
           await sendWhatsAppMessage(
             from,
 
             "I understand you want to cancel a reminder. The cancellation feature is coming next. 👍"
           );
 
-
           return res.sendStatus(
             200
           );
         }
-
 
         // ======================================
         // RESCHEDULE REMINDER
@@ -1148,19 +1192,16 @@ const receiveWebhook =
             "🔄 Intent: RESCHEDULE_REMINDER"
           );
 
-
           await sendWhatsAppMessage(
             from,
 
             "I understand you want to reschedule a reminder. The rescheduling feature is coming next. 👍"
           );
 
-
           return res.sendStatus(
             200
           );
         }
-
 
         // ======================================
         // UNKNOWN
@@ -1172,19 +1213,16 @@ const receiveWebhook =
             "❓ Intent: UNKNOWN"
           );
 
-
           await sendWhatsAppMessage(
             from,
 
             "I'm not completely sure what you mean. You can ask me to create a reminder, or we can just chat 😊"
           );
 
-
           return res.sendStatus(
             200
           );
         }
-
 
         // ======================================
         // FALLBACK
@@ -1197,13 +1235,11 @@ const receiveWebhook =
             aiResult.intent
           );
 
-
           await sendWhatsAppMessage(
             from,
 
             "I'm not sure how to handle that yet. 😊"
           );
-
 
           return res.sendStatus(
             200
@@ -1218,7 +1254,6 @@ const receiveWebhook =
         error.response?.data ||
         error.message
       );
-
 
       /*
       Always acknowledge Meta.
