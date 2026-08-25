@@ -1,385 +1,312 @@
+// services/time.service.js
+
 const chrono = require("chrono-node");
-const { DateTime } = require("luxon");
 
-
-// ============================================================
-// CONFIGURATION
-// ============================================================
-
-const DEFAULT_TIMEZONE =
-  process.env.ASSISTANT_TIMEZONE ||
-  "Asia/Kolkata";
-
-
-// ============================================================
-// PARSE REMINDER TIME
-// ============================================================
-
-const parseReminderTime = (
-  timeText,
-  recurring = false
-) => {
-
-  if (
-    !timeText ||
-    typeof timeText !== "string"
-  ) {
-    throw new Error(
-      "Reminder time is required"
-    );
+/**
+ * Normalize informal time expressions before passing them to chrono.
+ *
+ * Examples:
+ * "10 40"       -> "10:40"
+ * "10.40"       -> "10:40"
+ * "10-40"       -> "10:40"
+ * "10 40 am"    -> "10:40 am"
+ * "at 10 40"    -> "at 10:40"
+ */
+function normalizeTimeText(text) {
+  if (!text || typeof text !== "string") {
+    return text;
   }
 
+  let normalized = text.trim();
 
-  const normalized =
-    timeText
-      .trim()
-      .toLowerCase();
-
-
-  console.log(
-    "🕐 Parsing reminder time:",
-    timeText
+  // ---------------------------------------------------------
+  // 1. Convert "10 40" -> "10:40"
+  // ---------------------------------------------------------
+  normalized = normalized.replace(
+    /\b([01]?\d|2[0-3])\s+([0-5]\d)\b/g,
+    "$1:$2"
   );
 
+  // ---------------------------------------------------------
+  // 2. Convert "10.40" -> "10:40"
+  // ---------------------------------------------------------
+  normalized = normalized.replace(
+    /\b([01]?\d|2[0-3])\.([0-5]\d)\b/g,
+    "$1:$2"
+  );
 
-  // ==========================================================
-  // RECURRING REMINDERS
-  // ==========================================================
+  // ---------------------------------------------------------
+  // 3. Convert "10-40" -> "10:40"
+  // ---------------------------------------------------------
+  normalized = normalized.replace(
+    /\b([01]?\d|2[0-3])-([0-5]\d)\b/g,
+    "$1:$2"
+  );
 
-  if (recurring) {
+  // ---------------------------------------------------------
+  // 4. Normalize AM / PM spacing
+  // ---------------------------------------------------------
+  normalized = normalized.replace(
+    /\b(\d{1,2}:\d{2})\s*(a\.?m\.?|p\.?m\.?)\b/gi,
+    "$1 $2"
+  );
 
-    // --------------------------------------------------------
-    // EVERY X MINUTES
-    // --------------------------------------------------------
+  // ---------------------------------------------------------
+  // 5. Normalize "10am" -> "10 am"
+  // ---------------------------------------------------------
+  normalized = normalized.replace(
+    /\b(\d{1,2})\s*(a\.?m\.?|p\.?m\.?)\b/gi,
+    "$1 $2"
+  );
 
-    let match =
-      normalized.match(
-        /every\s+(\d+)\s*(minute|minutes|min|mins)/
-      );
+  // ---------------------------------------------------------
+  // 6. Normalize multiple spaces
+  // ---------------------------------------------------------
+  normalized = normalized.replace(/\s+/g, " ").trim();
 
+  return normalized;
+}
 
-    if (match) {
-
-      const intervalMinutes =
-        Number(match[1]);
-
-
-      if (
-        intervalMinutes <= 0
-      ) {
-        throw new Error(
-          "Recurring interval must be greater than 0"
-        );
-      }
-
-
-      return {
-        reminderType:
-          "recurring",
-
-        intervalMinutes,
-      };
-    }
-
-
-    // --------------------------------------------------------
-    // EVERY X HOURS
-    // --------------------------------------------------------
-
-    match =
-      normalized.match(
-        /every\s+(\d+)\s*(hour|hours|hr|hrs)/
-      );
-
-
-    if (match) {
-
-      const intervalMinutes =
-        Number(match[1]) * 60;
-
-
-      return {
-        reminderType:
-          "recurring",
-
-        intervalMinutes,
-      };
-    }
-
-
-    // --------------------------------------------------------
-    // EVERY X DAYS
-    // --------------------------------------------------------
-
-    match =
-      normalized.match(
-        /every\s+(\d+)\s*(day|days)/
-      );
-
-
-    if (match) {
-
-      const intervalMinutes =
-        Number(match[1]) *
-        24 *
-        60;
-
-
-      return {
-        reminderType:
-          "recurring",
-
-        intervalMinutes,
-      };
-    }
-
-
-    throw new Error(
-      `Could not understand recurring time: ${timeText}`
-    );
+/**
+ * Extract a date/time from natural language.
+ *
+ * @param {string} text
+ * @param {Date} referenceDate
+ * @returns {Date|null}
+ */
+function parseDateTime(text, referenceDate = new Date()) {
+  if (!text || typeof text !== "string") {
+    return null;
   }
 
+  const normalizedText = normalizeTimeText(text);
 
-  // ==========================================================
-  // ONE-TIME REMINDER
-  // ==========================================================
+  console.log("🕐 Original time text:", text);
+  console.log("🕐 Normalized time text:", normalizedText);
 
-  /*
-   * IMPORTANT:
-   *
-   * Use India timezone for interpreting:
-   *
-   * tomorrow at 8 AM
-   * today at 12 PM
-   * Monday at 10 AM
-   *
-   * This prevents Render's UTC timezone from changing
-   * the intended local date/time.
-   */
-
-  const now =
-    DateTime.now()
-      .setZone(
-        DEFAULT_TIMEZONE
-      );
-
-
-  console.log(
-    "🌍 Assistant timezone:",
-    DEFAULT_TIMEZONE
+  const results = chrono.parse(
+    normalizedText,
+    referenceDate,
+    {
+      forwardDate: false
+    }
   );
 
-  console.log(
-    "🕐 Current assistant time:",
-    now.toISO()
-  );
-
-
-  // ==========================================================
-  // CHRONO PARSE
-  // ==========================================================
-
-  const parsedResults =
-    chrono.parse(
-      timeText,
-      now.toJSDate(),
-      {
-        forwardDate: true,
-      }
-    );
-
-
-  if (
-    !parsedResults ||
-    parsedResults.length === 0
-  ) {
-
-    throw new Error(
-      `Could not understand reminder time: ${timeText}`
-    );
+  if (!results || results.length === 0) {
+    console.log("❌ Could not parse date/time");
+    return null;
   }
 
+  const result = results[0];
 
-  const parsed =
-    parsedResults[0];
+  let parsedDate = result.start.date();
 
+  console.log("🕐 Chrono parsed:", parsedDate);
+  console.log("🕐 Parsed text:", result.text);
 
-  console.log(
-    "🔎 Chrono parsed:",
-    parsed.text
-  );
+  // ---------------------------------------------------------
+  // IMPORTANT:
+  // If the user explicitly said tomorrow,
+  // make sure the date is tomorrow.
+  // ---------------------------------------------------------
+  const lowerText = normalizedText.toLowerCase();
 
+  if (/\btomorrow\b/.test(lowerText)) {
+    parsedDate = new Date(referenceDate);
+    parsedDate.setDate(parsedDate.getDate() + 1);
 
-  // ==========================================================
-  // EXTRACT DATE COMPONENTS
-  // ==========================================================
+    const hour = result.start.knownValues("hour")
+      ? result.start.get("hour")
+      : null;
 
-  const components =
-    parsed.start;
-
-
-  const year =
-    components.get(
-      "year"
-    );
-
-  const month =
-    components.get(
-      "month"
-    );
-
-  const day =
-    components.get(
-      "day"
-    );
-
-
-  const hour =
-    components.isCertain(
-      "hour"
-    )
-      ? components.get(
-          "hour"
-        )
+    const minute = result.start.knownValues("minute")
+      ? result.start.get("minute")
       : 0;
 
+    if (hour !== null) {
+      parsedDate.setHours(hour);
+      parsedDate.setMinutes(minute);
+      parsedDate.setSeconds(0);
+      parsedDate.setMilliseconds(0);
 
-  const minute =
-    components.isCertain(
-      "minute"
-    )
-      ? components.get(
-          "minute"
-        )
-      : 0;
+      // Handle AM/PM if available.
+      if (result.start.knownValues("meridiem")) {
+        const meridiem = result.start.get("meridiem");
 
+        if (meridiem === 1 && parsedDate.getHours() === 12) {
+          parsedDate.setHours(0);
+        }
 
-  const second =
-    components.isCertain(
-      "second"
-    )
-      ? components.get(
-          "second"
-        )
-      : 0;
-
-
-  // ==========================================================
-  // BUILD INDIA DATE
-  // ==========================================================
-
-  const scheduledDate =
-    DateTime.fromObject(
-      {
-        year,
-        month,
-        day,
-
-        hour,
-        minute,
-        second,
-
-        millisecond: 0,
-      },
-      {
-        zone:
-          DEFAULT_TIMEZONE,
+        if (meridiem === 2 && parsedDate.getHours() < 12) {
+          parsedDate.setHours(parsedDate.getHours() + 12);
+        }
       }
-    );
-
-
-  if (
-    !scheduledDate.isValid
-  ) {
-
-    throw new Error(
-      `Invalid reminder date: ${scheduledDate.invalidReason}`
-    );
-  }
-
-
-  // ==========================================================
-  // PREVENT PAST TIMES
-  // ==========================================================
-
-  if (
-    scheduledDate <= now
-  ) {
-
-    /*
-     * If the user said only a clock time and it is already
-     * past today, move it to tomorrow.
-     */
-
-    const hasExplicitDate =
-      components.isCertain(
-        "day"
-      ) ||
-      components.isCertain(
-        "month"
-      ) ||
-      components.isCertain(
-        "year"
-      ) ||
-      /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(
-        timeText
-      );
-
-
-    if (!hasExplicitDate) {
-
-      const tomorrow =
-        scheduledDate.plus({
-          days: 1,
-        });
-
-
-      return {
-        reminderType:
-          "one_time",
-
-        scheduledFor:
-          tomorrow.toUTC().toISO(),
-
-        timezone:
-          DEFAULT_TIMEZONE,
-      };
     }
   }
 
+  // ---------------------------------------------------------
+  // If "today" was explicitly mentioned, force today's date.
+  // ---------------------------------------------------------
+  if (/\btoday\b/.test(lowerText)) {
+    const current = new Date(referenceDate);
 
-  // ==========================================================
-  // RESULT
-  // ==========================================================
+    const hour = result.start.knownValues("hour")
+      ? result.start.get("hour")
+      : null;
 
-  const result = {
-    reminderType:
-      "one_time",
+    const minute = result.start.knownValues("minute")
+      ? result.start.get("minute")
+      : 0;
 
-    scheduledFor:
-      scheduledDate
-        .toUTC()
-        .toISO(),
+    if (hour !== null) {
+      parsedDate = new Date(current);
 
-    timezone:
-      DEFAULT_TIMEZONE,
+      parsedDate.setHours(hour);
+      parsedDate.setMinutes(minute);
+      parsedDate.setSeconds(0);
+      parsedDate.setMilliseconds(0);
+
+      if (result.start.knownValues("meridiem")) {
+        const meridiem = result.start.get("meridiem");
+
+        if (meridiem === 1 && parsedDate.getHours() === 12) {
+          parsedDate.setHours(0);
+        }
+
+        if (meridiem === 2 && parsedDate.getHours() < 12) {
+          parsedDate.setHours(parsedDate.getHours() + 12);
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------
+  // If no explicit date was provided:
+  //
+  // Example:
+  // "remind me at 10:40"
+  //
+  // If 10:40 is still in the future -> TODAY.
+  //
+  // If 10:40 already passed -> TOMORROW.
+  // ---------------------------------------------------------
+  const hasExplicitDate =
+    /\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(
+      lowerText
+    );
+
+  if (!hasExplicitDate) {
+    const now = new Date(referenceDate);
+
+    const hasTime =
+      result.start.knownValues("hour") ||
+      result.start.knownValues("minute");
+
+    if (hasTime) {
+      const candidate = new Date(parsedDate);
+
+      // chrono sometimes gives an unexpected date.
+      candidate.setFullYear(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate()
+      );
+
+      if (candidate > now) {
+        // Time is still ahead today.
+        parsedDate = candidate;
+      } else {
+        // Time has already passed -> tomorrow.
+        candidate.setDate(candidate.getDate() + 1);
+        parsedDate = candidate;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------
+  // Safety: never return an invalid date
+  // ---------------------------------------------------------
+  if (Number.isNaN(parsedDate.getTime())) {
+    console.log("❌ Invalid parsed date");
+    return null;
+  }
+
+  console.log(
+    "✅ Final scheduled time:",
+    parsedDate.toISOString()
+  );
+
+  return parsedDate;
+}
+
+/**
+ * Parse a reminder time and return useful information.
+ *
+ * Example:
+ *
+ * parseReminderTime("remind me to make timetable at 10 40")
+ */
+function parseReminderTime(text, referenceDate = new Date()) {
+  if (!text || typeof text !== "string") {
+    return {
+      date: null,
+      normalizedText: text || "",
+      success: false
+    };
+  }
+
+  const normalizedText = normalizeTimeText(text);
+
+  const date = parseDateTime(
+    normalizedText,
+    referenceDate
+  );
+
+  return {
+    date,
+    normalizedText,
+    success: !!date
   };
+}
 
+/**
+ * Check whether text contains a recognizable time.
+ */
+function hasTime(text) {
+  if (!text || typeof text !== "string") {
+    return false;
+  }
 
-  console.log(
-    "✅ Final reminder schedule:",
-    result
-  );
+  const normalized = normalizeTimeText(text);
 
+  const results = chrono.parse(normalized);
 
-  return result;
-};
+  return results.length > 0;
+}
 
+/**
+ * Format Date for logs/debugging.
+ */
+function formatDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
 
-// ============================================================
-// EXPORT
-// ============================================================
+  return date.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true
+  });
+}
 
 module.exports = {
+  normalizeTimeText,
+  parseDateTime,
   parseReminderTime,
+  hasTime,
+  formatDate
 };
