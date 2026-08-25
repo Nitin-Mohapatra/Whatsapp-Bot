@@ -1,5 +1,7 @@
 const OpenAI = require("openai");
 
+const chrono = require("chrono-node");
+
 // ============================================================
 // MEMORY SERVICE
 // ============================================================
@@ -70,13 +72,19 @@ const normalizeRouterResult = (result) => {
     "acknowledge_reminder",
     "conversation",
     "connect_google_calendar",
+    "CALENDAR_QUERY",
     "cancel_reminder",
     "reschedule_reminder",
     "unknown",
   ];
 
-  const intent = allowedIntents.includes(result.intent)
-    ? result.intent
+  const rawIntent =
+    result.intent === "calendar_query"
+      ? "CALENDAR_QUERY"
+      : result.intent;
+
+  const intent = allowedIntents.includes(rawIntent)
+    ? rawIntent
     : null;
 
   if (!intent) {
@@ -113,6 +121,17 @@ const normalizeRouterResult = (result) => {
 
     recurring:
       Boolean(result.recurring),
+
+    date:
+      typeof result.date === "string" &&
+      result.date.trim()
+        ? result.date.trim()
+        : null,
+
+    range:
+      result.range === "day"
+        ? "day"
+        : null,
   };
 };
 
@@ -430,6 +449,9 @@ const localFallbackRouter = (message) => {
     /\bi want to connect (my\s+)?(google\s+)?calendar\b/,
   ];
 
+  const calendarQueryPattern =
+    /\b(calendar|schedule|events?|meetings?)\b|\bwhat do i have\b/;
+
   if (
     calendarConnectPatterns.some((pattern) =>
       pattern.test(normalizedMessage)
@@ -441,6 +463,41 @@ const localFallbackRouter = (message) => {
       task: null,
       timeText: null,
       recurring: false,
+    };
+  }
+
+  if (
+    calendarQueryPattern.test(normalizedMessage)
+  ) {
+    const referenceDate = new Date();
+    let date = "today";
+
+    if (/\btomorrow\b/.test(normalizedMessage)) {
+      date = "tomorrow";
+    } else if (
+      !/\btoday\b/.test(normalizedMessage)
+    ) {
+      const parsedDate = chrono.parseDate(
+        message,
+        referenceDate,
+        {
+          forwardDate: true,
+        }
+      );
+
+      if (parsedDate) {
+        date = parsedDate.toISOString().slice(0, 10);
+      }
+    }
+
+    return {
+      intent: "CALENDAR_QUERY",
+      confidence: 1,
+      task: null,
+      timeText: null,
+      recurring: false,
+      date,
+      range: "day",
     };
   }
 
@@ -618,6 +675,7 @@ create_reminder
 acknowledge_reminder
 conversation
 connect_google_calendar
+CALENDAR_QUERY
 cancel_reminder
 reschedule_reminder
 unknown
@@ -676,6 +734,34 @@ Return ONLY:
 {
   "intent": "connect_google_calendar",
   "confidence": 1,
+  "task": null,
+  "timeText": null,
+  "recurring": false
+}
+
+============================================================
+CALENDAR QUERY
+============================================================
+
+Classify requests asking what is on the user's calendar,
+schedule, meetings, or events as CALENDAR_QUERY. Extract the
+requested day as today, tomorrow, or an ISO date (YYYY-MM-DD).
+Use range "day".
+
+Examples:
+
+"what is on my calendar today"
+"show my calendar tomorrow"
+"what do I have on Friday"
+"show my calendar for 28 August"
+
+Return ONLY:
+
+{
+  "intent": "CALENDAR_QUERY",
+  "confidence": 0.98,
+  "date": "today",
+  "range": "day",
   "task": null,
   "timeText": null,
   "recurring": false

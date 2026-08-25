@@ -52,7 +52,113 @@ const {
 
 const {
   generateAuthUrl,
+  getTodayEvents,
+  getTomorrowEvents,
+  getEventsForDate,
 } = require("../services/google.calendar.service");
+
+const { DateTime } = require("luxon");
+
+const chrono = require("chrono-node");
+
+const resolveCalendarQueryDate = (date, message) => {
+  const now = DateTime.now().setZone("Asia/Kolkata");
+
+  if (date === "today" || !date) {
+    return now.toISODate();
+  }
+
+  if (date === "tomorrow") {
+    return now.plus({ days: 1 }).toISODate();
+  }
+
+  if (DateTime.fromISO(date).isValid) {
+    return DateTime.fromISO(date).toISODate();
+  }
+
+  const parsedDate = chrono.parseDate(
+    message,
+    now.toJSDate(),
+    {
+      forwardDate: true,
+    }
+  );
+
+  return parsedDate
+    ? DateTime.fromJSDate(parsedDate, {
+        zone: "Asia/Kolkata",
+      }).toISODate()
+    : null;
+};
+
+const formatCalendarDate = (date) => {
+  const dateTime = DateTime.fromISO(date, {
+    zone: "Asia/Kolkata",
+  });
+
+  return dateTime.isValid
+    ? dateTime.toFormat("dd LLLL yyyy")
+    : "the requested day";
+};
+
+const formatCalendarEventTime = (event) => {
+  if (event.allDay) {
+    return "📌 All day";
+  }
+
+  const start = DateTime.fromISO(event.start).setZone(
+    "Asia/Kolkata"
+  );
+  const end = DateTime.fromISO(event.end).setZone(
+    "Asia/Kolkata"
+  );
+
+  if (!start.isValid) {
+    return "🕘 Time unavailable";
+  }
+
+  return `🕘 ${start.toFormat("h:mm a")}${
+    end.isValid
+      ? ` – ${end.toFormat("h:mm a")}`
+      : ""
+  }`;
+};
+
+const formatCalendarReply = (date, events) => {
+  const titleDate =
+    date === "today"
+      ? "Today"
+      : date === "tomorrow"
+        ? "Tomorrow"
+        : formatCalendarDate(date);
+
+  let reply =
+    `📅 Your Calendar for ${titleDate}\n\n`;
+
+  if (!events.length) {
+    return reply +
+      `You have no events scheduled ${
+        date === "today" ? "today" : "for this day"
+      }. 😊`;
+  }
+
+  events.forEach((event, index) => {
+    reply +=
+      `${index + 1}. ${formatCalendarEventTime(event)}\n` +
+      `   ${event.title}\n`;
+
+    if (event.location) {
+      reply += `   📍 ${event.location}\n`;
+    }
+
+    reply += "\n";
+  });
+
+  return reply +
+    `You have ${events.length} event${
+      events.length === 1 ? "" : "s"
+    } ${date === "today" ? "today" : "for this day"}. 😊`;
+};
 
 
 // ======================================================
@@ -862,6 +968,104 @@ const receiveWebhook =
           return res.sendStatus(
             200
           );
+        }
+
+        // ==================================================
+        // CALENDAR QUERY
+        // ==================================================
+
+        case "CALENDAR_QUERY":
+        case "calendar_query": {
+
+          const requestedDate =
+            aiResult.date || "today";
+
+          console.log(
+            "[CALENDAR] Query received"
+          );
+          console.log(
+            "[CALENDAR] Phone:",
+            from
+          );
+          console.log(
+            "[CALENDAR] Requested date:",
+            requestedDate
+          );
+
+          try {
+            let result;
+            let displayDate = requestedDate;
+
+            if (requestedDate === "today") {
+              result = await getTodayEvents(from);
+            } else if (requestedDate === "tomorrow") {
+              result = await getTomorrowEvents(from);
+            } else {
+              const resolvedDate =
+                resolveCalendarQueryDate(
+                  requestedDate,
+                  text
+                );
+
+              if (!resolvedDate) {
+                await sendWhatsAppMessage(
+                  from,
+                  "Which date should I check on your calendar?"
+                );
+
+                return res.sendStatus(200);
+              }
+
+              displayDate = resolvedDate;
+
+              result = await getEventsForDate(
+                from,
+                resolvedDate
+              );
+            }
+
+            if (!result.connected) {
+              await sendWhatsAppMessage(
+                from,
+                "📅 Google Calendar isn't connected yet.\n\nPlease send:\n\"connect my google calendar\""
+              );
+
+              return res.sendStatus(200);
+            }
+
+            console.log(
+              "[CALENDAR] Events found:",
+              result.events.length
+            );
+
+            const reply = formatCalendarReply(
+              displayDate,
+              result.events
+            );
+
+            await sendWhatsAppMessage(
+              from,
+              reply
+            );
+
+            console.log(
+              "[CALENDAR] Calendar response sent"
+            );
+
+            return res.sendStatus(200);
+          } catch (calendarError) {
+            console.error(
+              "[CALENDAR] Failed to fetch events:",
+              calendarError.message
+            );
+
+            await sendWhatsAppMessage(
+              from,
+              "📅 I couldn't read your Google Calendar right now. Please try again in a moment."
+            );
+
+            return res.sendStatus(200);
+          }
         }
 
         // ==================================================

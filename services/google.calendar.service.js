@@ -2,6 +2,8 @@ const { google } = require("googleapis");
 
 const crypto = require("crypto");
 
+const { DateTime } = require("luxon");
+
 const GoogleCalendar =
   require("../models/googleCalendar.model");
 
@@ -307,11 +309,38 @@ const getAuthenticatedClient =
   };
 
 // ============================================================
-// GET TODAY'S EVENTS
+// CALENDAR EVENT QUERIES
 // ============================================================
 
-const getTodaysEvents =
-  async (phoneNumber) => {
+const CALENDAR_TIMEZONE = "Asia/Kolkata";
+
+const normalizeEvent = (event) => {
+  const startDateTime =
+    event.start?.dateTime || null;
+
+  const endDateTime =
+    event.end?.dateTime || null;
+
+  const startDate =
+    event.start?.date || null;
+
+  const endDate =
+    event.end?.date || null;
+
+  return {
+    id: event.id || null,
+    title: event.summary || "Untitled event",
+    description: event.description || null,
+    start: startDateTime || startDate,
+    end: endDateTime || endDate,
+    location: event.location || null,
+    allDay: Boolean(!startDateTime && startDate),
+    status: event.status || null,
+  };
+};
+
+const getEventsForRange =
+  async (phoneNumber, startDate, endDate) => {
     const auth =
       await getAuthenticatedClient(
         phoneNumber
@@ -330,38 +359,16 @@ const getTodaysEvents =
         auth,
       });
 
-    const now =
-      new Date();
-
-    const startOfDay =
-      new Date(now);
-
-    startOfDay.setHours(
-      0,
-      0,
-      0,
-      0
-    );
-
-    const endOfDay =
-      new Date(now);
-
-    endOfDay.setHours(
-      23,
-      59,
-      59,
-      999
-    );
+    const timeMin = startDate.toUTC().toISO();
+    const timeMax = endDate.toUTC().toISO();
 
     const response =
       await calendar.events.list({
         calendarId: "primary",
 
-        timeMin:
-          startOfDay.toISOString(),
+        timeMin,
 
-        timeMax:
-          endOfDay.toISOString(),
+        timeMax,
 
         singleEvents: true,
 
@@ -377,45 +384,52 @@ const getTodaysEvents =
     return {
       connected: true,
 
-      events: events.map(
-        (event) => ({
-          id: event.id,
-
-          title:
-            event.summary ||
-            "Untitled event",
-
-          description:
-            event.description ||
-            null,
-
-          location:
-            event.location ||
-            null,
-
-          start:
-            event.start
-              ?.dateTime ||
-            event.start?.date ||
-            null,
-
-          end:
-            event.end
-              ?.dateTime ||
-            event.end?.date ||
-            null,
-
-          status:
-            event.status ||
-            null,
-
-          htmlLink:
-            event.htmlLink ||
-            null,
-        })
-      ),
+      events: events.map(normalizeEvent),
     };
 };
+
+const getEventsForDate = async (
+  phoneNumber,
+  date
+) => {
+  const dateTime =
+    DateTime.fromISO(date, {
+      zone: CALENDAR_TIMEZONE,
+    });
+
+  if (!dateTime.isValid) {
+    throw new Error("Invalid calendar date");
+  }
+
+  return getEventsForRange(
+    phoneNumber,
+    dateTime.startOf("day"),
+    dateTime.plus({ days: 1 }).startOf("day")
+  );
+};
+
+const getTodayEvents = async (
+  phoneNumber
+) => {
+  const today = DateTime.now()
+    .setZone(CALENDAR_TIMEZONE)
+    .toISODate();
+
+  return getEventsForDate(phoneNumber, today);
+};
+
+const getTomorrowEvents = async (
+  phoneNumber
+) => {
+  const tomorrow = DateTime.now()
+    .setZone(CALENDAR_TIMEZONE)
+    .plus({ days: 1 })
+    .toISODate();
+
+  return getEventsForDate(phoneNumber, tomorrow);
+};
+
+const getTodaysEvents = getTodayEvents;
 
 // ============================================================
 // CHECK CONNECTION
@@ -497,6 +511,14 @@ module.exports = {
   getAuthenticatedClient,
 
   getTodaysEvents,
+
+  getTodayEvents,
+
+  getTomorrowEvents,
+
+  getEventsForDate,
+
+  getEventsForRange,
 
   getCalendarConnection,
 
