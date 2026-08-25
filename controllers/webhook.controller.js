@@ -48,14 +48,30 @@ const {
 const {
   cancelReminderByTask,
   cancelLatestReminder,
+  cancelReminderById,
 } = require("../services/reminder.cancellation.service");
+
+const {
+  rescheduleReminder,
+} = require("../services/reminder.rescheduling.service");
 
 const {
   generateAuthUrl,
   getTodayEvents,
   getTomorrowEvents,
   getEventsForDate,
+  getThisWeekEvents,
+  createCalendarEvent,
+  updateCalendarEvent,
+  deleteCalendarEvent,
+  findMatchingCalendarEvents,
 } = require("../services/google.calendar.service");
+
+const {
+  getActiveReminders,
+} = require("../services/reminder.cancellation.service");
+
+const Reminder = require("../models/reminder.model");
 
 const { DateTime } = require("luxon");
 
@@ -894,6 +910,24 @@ const receiveWebhook =
 
         );
 
+      const selectionMatch = text
+        .trim()
+        .match(/^(?:cancel\s+(?:number\s+)?|the\s+)?(\d+)(?:st|nd|rd|th)?(?:\s+one)?$/i);
+
+      const recentSelectionPrompt = recentContext
+        .slice()
+        .reverse()
+        .find((item) =>
+          item.role === "assistant" &&
+          /multiple active reminders|more than one reminder/i.test(item.content)
+        );
+
+      if (selectionMatch && recentSelectionPrompt) {
+        aiResult.intent = "cancel_reminder";
+        aiResult.selectionIndex = Number(selectionMatch[1]);
+        aiResult.task = null;
+      }
+
       console.log(
         "🧠 AI Router Result:",
         JSON.stringify(
@@ -996,7 +1030,9 @@ const receiveWebhook =
             let result;
             let displayDate = requestedDate;
 
-            if (requestedDate === "today") {
+            if (aiResult.range === "week") {
+              result = await getThisWeekEvents(from);
+            } else if (requestedDate === "today") {
               result = await getTodayEvents(from);
             } else if (requestedDate === "tomorrow") {
               result = await getTomorrowEvents(from);
@@ -1038,10 +1074,9 @@ const receiveWebhook =
               result.events.length
             );
 
-            const reply = formatCalendarReply(
-              displayDate,
-              result.events
-            );
+            const reply = aiResult.range === "week"
+              ? formatWeeklyCalendarReply(result.events)
+              : formatCalendarReply(displayDate, result.events);
 
             await sendWhatsAppMessage(
               from,
@@ -1066,6 +1101,93 @@ const receiveWebhook =
 
             return res.sendStatus(200);
           }
+        }
+
+        // ==================================================
+        // CREATE GOOGLE CALENDAR EVENT
+        // ==================================================
+
+        case "create_calendar_event": {
+          const title = aiResult.title;
+          const start = resolveUserDateTime(
+            aiResult.date,
+            aiResult.startTime
+          );
+
+          if (!title) {
+            await sendWhatsAppMessage(
+              from,
+              "What should I call this calendar event?"
+            );
+            return res.sendStatus(200);
+          }
+
+          if (!start) {
+            await sendWhatsAppMessage(
+              from,
+              aiResult.date
+                ? "Sure. What time should I schedule the event?"
+                : "Sure. What date and time should I schedule the event?"
+            );
+            return res.sendStatus(200);
+          }
+
+          const duration = aiResult.durationMinutes || 60;
+          const end = aiResult.endTime
+            ? resolveUserDateTime(aiResult.date, aiResult.endTime)
+            : new Date(start.getTime() + duration * 60 * 1000);
+
+          if (!end || end <= start || start <= new Date()) {
+            await sendWhatsAppMessage(
+              from,
+              "That calendar time is invalid or has already passed. Please provide a future date and time."
+            );
+            return res.sendStatus(200);
+          }
+
+          try {
+            console.log("[CALENDAR] Creating event", from);
+            const result = await createCalendarEvent({
+              phoneNumber: from,
+              title,
+              start,
+              end,
+              location: aiResult.location,
+              description: aiResult.description,
+            });
+
+            if (!result.connected) {
+              await sendWhatsAppMessage(
+                from,
+                "📅 Google Calendar isn't connected yet.\n\nPlease send:\n\"connect my google calendar\""
+              );
+              return res.sendStatus(200);
+            }
+
+            await sendWhatsAppMessage(
+              from,
+              formatEventConfirmation(result.event)
+            );
+          } catch (calendarError) {
+            console.error("[CALENDAR] Failed to create event:", calendarError.message);
+            await sendWhatsAppMessage(
+              from,
+              "📅 I couldn't create that Google Calendar event right now. Please try again."
+            );
+          }
+
+          return res.sendStatus(200);
+        }
+
+        // ==================================================
+        // LIST REMINDERS
+        // ==================================================
+
+        case "list_reminders": {
+          console.log("[REMINDER] Listing active reminders");
+          const reminders = await getActiveReminders(from);
+          await sendWhatsAppMessage(from, formatReminderList(reminders));
+          return res.sendStatus(200);
         }
 
         // ==================================================
@@ -1169,6 +1291,44 @@ const receiveWebhook =
           const reminder =
             result.reminder;
 
+          let calendarEventAdded = false;
+          let calendarUnavailable = false;
+          let calendarLinkFailed = false;
+
+          if (
+            reminder.reminderType === "one_time" &&
+            reminder.scheduledFor
+          ) {
+            try {
+              const calendarResult = await createCalendarEvent({
+                phoneNumber: from,
+                title: reminder.task,
+                start: reminder.scheduledFor,
+                end: new Date(
+                  reminder.scheduledFor.getTime() +
+                    60 * 60 * 1000
+                ),
+              });
+
+              if (calendarResult.connected && calendarResult.event) {
+                reminder.calendarEventId = calendarResult.event.id;
+                reminder.calendarEventCreated = true;
+                reminder.calendarEventLink =
+                  calendarResult.htmlLink || null;
+                await reminder.save();
+                calendarEventAdded = true;
+              } else {
+                calendarUnavailable = true;
+              }
+            } catch (calendarError) {
+              console.error(
+                "[CALENDAR] Failed to link reminder:",
+                calendarError.message
+              );
+              calendarLinkFailed = true;
+            }
+          }
+
           let scheduledText =
             "";
 
@@ -1250,6 +1410,19 @@ const receiveWebhook =
           reply +=
             `I'll remind you at the scheduled time. 😊`;
 
+          if (calendarEventAdded) {
+            reply +=
+              `\n\n📅 Added to Google Calendar too.`;
+          } else if (
+            calendarUnavailable
+          ) {
+            reply +=
+              `\n\nGoogle Calendar isn't connected, so I didn't add it there.`;
+          } else if (calendarLinkFailed) {
+            reply +=
+              `\n\nI couldn't add it to Google Calendar, but the reminder was created successfully.`;
+          }
+
           await sendWhatsAppMessage(
 
             from,
@@ -1287,6 +1460,100 @@ const receiveWebhook =
           return res.sendStatus(
             200
           );
+        }
+
+        // ==================================================
+        // CALENDAR-BASED REMINDER
+        // ==================================================
+
+        case "calendar_based_reminder": {
+          if (!aiResult.offsetMinutes || aiResult.offsetMinutes <= 0) {
+            await sendWhatsAppMessage(
+              from,
+              "How many minutes before the event should I remind you?"
+            );
+            return res.sendStatus(200);
+          }
+
+          const eventDate = resolveCalendarQueryDate(
+            aiResult.date || "today",
+            text
+          );
+
+          try {
+            const result = await findMatchingCalendarEvents({
+              phoneNumber: from,
+              eventQuery: aiResult.eventQuery || "next",
+              date: eventDate,
+            });
+
+            if (!result.connected) {
+              await sendWhatsAppMessage(
+                from,
+                "📅 Google Calendar isn't connected yet.\n\nPlease send:\n\"connect my google calendar\""
+              );
+              return res.sendStatus(200);
+            }
+
+            if (result.events.length > 1) {
+              let reply = "I found multiple matching events. Which one do you mean?\n\n";
+              result.events.slice(0, 5).forEach((event, index) => {
+                reply += `${index + 1}. ${event.title} - ${formatCalendarEventTime(event)}\n`;
+              });
+              await sendWhatsAppMessage(from, reply);
+              return res.sendStatus(200);
+            }
+
+            const event = result.events[0];
+            if (!event) {
+              await sendWhatsAppMessage(
+                from,
+                "I couldn't find a matching upcoming calendar event."
+              );
+              return res.sendStatus(200);
+            }
+
+            const reminderTime = new Date(
+              new Date(event.start).getTime() -
+                aiResult.offsetMinutes * 60 * 1000
+            );
+
+            if (reminderTime <= new Date()) {
+              await sendWhatsAppMessage(
+                from,
+                "That reminder time has already passed. Would you like me to remind you before your next event instead?"
+              );
+              return res.sendStatus(200);
+            }
+
+            const reminderResult = await processReminderMessage({
+              phoneNumber: from,
+              message: text,
+              aiResult: {
+                intent: "create_reminder",
+                task: `Before ${event.title}`,
+                scheduledFor: reminderTime.toISOString(),
+                recurring: false,
+              },
+            });
+
+            if (!reminderResult.isReminder) {
+              throw new Error("Calendar-based reminder could not be created");
+            }
+
+            await sendWhatsAppMessage(
+              from,
+              `📅 I found your event:\n\n${event.title}\n${formatCalendarEventTime(event)}\n\n⏰ I'll remind you at ${formatReminderTime(reminderTime)}.`
+            );
+          } catch (calendarError) {
+            console.error("[CALENDAR] Calendar-based reminder failed:", calendarError.message);
+            await sendWhatsAppMessage(
+              from,
+              "I couldn't create that calendar-based reminder right now. Please try again."
+            );
+          }
+
+          return res.sendStatus(200);
         }
 
         // ==================================================
@@ -1568,6 +1835,45 @@ const receiveWebhook =
             "🗑️ Intent: CANCEL_REMINDER"
           );
 
+          if (aiResult.selectionIndex) {
+            const activeReminders = await getActiveReminders(from);
+            const selectedReminder =
+              activeReminders[aiResult.selectionIndex - 1];
+
+            if (!selectedReminder) {
+              await sendWhatsAppMessage(
+                from,
+                "Please choose one of the reminder numbers I listed."
+              );
+              return res.sendStatus(200);
+            }
+
+            const selectedResult = await cancelReminderById(
+              from,
+              selectedReminder._id
+            );
+
+            if (selectedResult.cancelled) {
+              if (selectedResult.reminder.calendarEventId) {
+                try {
+                  await deleteCalendarEvent({
+                    phoneNumber: from,
+                    eventId: selectedResult.reminder.calendarEventId,
+                  });
+                } catch (calendarError) {
+                  console.error("[CALENDAR] Failed to delete linked event:", calendarError.message);
+                }
+              }
+
+              await sendWhatsAppMessage(
+                from,
+                `🗑️ Reminder cancelled!\n\n📝 Task: ${selectedResult.reminder.task}`
+              );
+            }
+
+            return res.sendStatus(200);
+          }
+
           console.log(
             "📝 Cancellation task from AI:",
             aiResult.task
@@ -1616,6 +1922,17 @@ const receiveWebhook =
 
               const cancelledReminder =
                 cancellationResult.reminder;
+
+              if (cancelledReminder.calendarEventId) {
+                try {
+                  await deleteCalendarEvent({
+                    phoneNumber: from,
+                    eventId: cancelledReminder.calendarEventId,
+                  });
+                } catch (calendarError) {
+                  console.error("[CALENDAR] Failed to delete linked event:", calendarError.message);
+                }
+              }
 
               await sendWhatsAppMessage(
                 from,
@@ -1693,6 +2010,12 @@ const receiveWebhook =
                 from,
                 reply
               );
+
+              await addRecentContext({
+                phoneNumber: from,
+                role: "assistant",
+                content: reply,
+              });
 
               return res.sendStatus(
                 200
@@ -1833,6 +2156,17 @@ const receiveWebhook =
             const cancelledReminder =
               latestResult.reminder;
 
+            if (cancelledReminder.calendarEventId) {
+              try {
+                await deleteCalendarEvent({
+                  phoneNumber: from,
+                  eventId: cancelledReminder.calendarEventId,
+                });
+              } catch (calendarError) {
+                console.error("[CALENDAR] Failed to delete linked event:", calendarError.message);
+              }
+            }
+
             await sendWhatsAppMessage(
               from,
 
@@ -1933,6 +2267,12 @@ const receiveWebhook =
               reply
             );
 
+            await addRecentContext({
+              phoneNumber: from,
+              role: "assistant",
+              content: reply,
+            });
+
             return res.sendStatus(
               200
             );
@@ -1963,16 +2303,109 @@ const receiveWebhook =
             "🔄 Intent: RESCHEDULE_REMINDER"
           );
 
-          /*
-           * Rescheduling is intentionally left
-           * for the next development step.
-           */
+          const rescheduleDate = aiResult.scheduledFor
+            ? new Date(aiResult.scheduledFor)
+            : resolveUserDateTime(aiResult.date, aiResult.timeText);
+
+          if (!rescheduleDate || Number.isNaN(rescheduleDate.getTime())) {
+            await sendWhatsAppMessage(
+              from,
+              "What date and time should I move the reminder to?"
+            );
+            return res.sendStatus(200);
+          }
+
+          if (rescheduleDate <= new Date()) {
+            await sendWhatsAppMessage(
+              from,
+              "That time has already passed. Please give me a future time."
+            );
+            return res.sendStatus(200);
+          }
+
+          const activeForReschedule = await getActiveReminders(from);
+          let requestedTask = aiResult.task;
+
+          if (!requestedTask && activeForReschedule.length === 1) {
+            requestedTask = activeForReschedule[0].task;
+          }
+
+          if (!requestedTask) {
+            await sendWhatsAppMessage(
+              from,
+              "Which reminder should I reschedule?"
+            );
+            return res.sendStatus(200);
+          }
+
+          const rescheduleResult = await rescheduleReminder({
+            phoneNumber: from,
+            requestedTask,
+            scheduledFor: rescheduleDate,
+          });
+
+          if (rescheduleResult.reason === "ambiguous_match") {
+            let reply = "I found multiple reminders. Which one should I reschedule?\n\n";
+            rescheduleResult.matches.forEach((reminder, index) => {
+              reply += `${index + 1}. ${reminder.task}\n`;
+            });
+            await sendWhatsAppMessage(from, reply);
+            return res.sendStatus(200);
+          }
+
+          if (!rescheduleResult.rescheduled) {
+            await sendWhatsAppMessage(
+              from,
+              `I couldn't find an active reminder for "${requestedTask}".`
+            );
+            return res.sendStatus(200);
+          }
+
+          const movedReminder = rescheduleResult.reminder;
+
+          if (movedReminder.calendarEventId) {
+            try {
+              await updateCalendarEvent({
+                phoneNumber: from,
+                eventId: movedReminder.calendarEventId,
+                start: rescheduleDate,
+                end: new Date(rescheduleDate.getTime() + 60 * 60 * 1000),
+              });
+            } catch (calendarError) {
+              console.error("[CALENDAR] Failed to update linked event:", calendarError.message);
+
+              try {
+                const recreated = await createCalendarEvent({
+                  phoneNumber: from,
+                  title: movedReminder.task,
+                  start: rescheduleDate,
+                  end: new Date(rescheduleDate.getTime() + 60 * 60 * 1000),
+                });
+
+                if (recreated.connected && recreated.event) {
+                  await Reminder.updateOne(
+                    {
+                      _id: movedReminder._id,
+                      phoneNumber: from,
+                    },
+                    {
+                      $set: {
+                        calendarEventId: recreated.event.id,
+                        calendarEventCreated: true,
+                        calendarEventLink: recreated.htmlLink || null,
+                      },
+                    }
+                  );
+                }
+              } catch (recreateError) {
+                console.error("[CALENDAR] Failed to recreate linked event:", recreateError.message);
+              }
+            }
+          }
 
           await sendWhatsAppMessage(
-
             from,
-
-            "I understand you want to reschedule a reminder. The rescheduling feature is coming next. 👍"
+            `🔄 Reminder rescheduled!\n\n📝 Task: ${movedReminder.task}\n⏰ New time: ${formatReminderTime(rescheduleDate)}`
           );
 
           return res.sendStatus(
@@ -1990,16 +2423,11 @@ const receiveWebhook =
             "📋 Intent: LIST_REMINDERS"
           );
 
-          /*
-           * Listing reminders will be implemented
-           * together with cancellation/rescheduling.
-           */
+          const activeReminders = await getActiveReminders(from);
 
           await sendWhatsAppMessage(
-
             from,
-
-            "I understand you want to see your reminders. The reminder list feature is coming next. 👍"
+            formatReminderList(activeReminders)
           );
 
           return res.sendStatus(
@@ -2082,4 +2510,128 @@ module.exports = {
 
   receiveWebhook,
 
+};
+
+const resolveUserDateTime = (date, time) => {
+  if (!date || !time) {
+    return null;
+  }
+
+  const now = DateTime.now().setZone("Asia/Kolkata");
+  const dateText =
+    date === "today"
+      ? now.toISODate()
+      : date === "tomorrow"
+        ? now.plus({ days: 1 }).toISODate()
+        : date;
+  const parsed = chrono.parse(
+    `${dateText} at ${time}`,
+    now.toJSDate(),
+    { forwardDate: true }
+  )[0];
+
+  if (!parsed) {
+    return null;
+  }
+
+  const values = parsed.start;
+  const result = DateTime.fromObject(
+    {
+      year: values.get("year"),
+      month: values.get("month"),
+      day: values.get("day"),
+      hour: values.get("hour"),
+      minute: values.knownValues("minute")
+        ? values.get("minute")
+        : 0,
+      second: 0,
+      millisecond: 0,
+    },
+    { zone: "Asia/Kolkata" }
+  );
+
+  return result.isValid ? result.toJSDate() : null;
+};
+
+const formatReminderTime = (date) =>
+  date
+    ? new Date(date).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      })
+    : "time unavailable";
+
+const formatReminderList = (reminders) => {
+  if (!reminders.length) {
+    return "📋 You don't have any active reminders right now. 😊";
+  }
+
+  let reply = "📋 Your Active Reminders\n\n";
+
+  reminders.forEach((reminder, index) => {
+    reply += `${index + 1}. 📝 ${reminder.task}\n`;
+    reply += reminder.reminderType === "recurring"
+      ? "   🔁 Recurring\n"
+      : "";
+    reply += `   ⏰ ${formatReminderTime(reminder.nextRunAt || reminder.scheduledFor)}\n\n`;
+  });
+
+  return reply.trim();
+};
+
+const formatEventConfirmation = (event) => {
+  const start = new Date(event.start);
+  const end = new Date(event.end);
+
+  return "📅 Calendar event created!\n\n" +
+    `📝 ${event.title}\n` +
+    `📅 ${formatReminderTime(start)}\n` +
+    `⏰ ${start.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "numeric", minute: "2-digit", hour12: true })} – ` +
+    `${end.toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "numeric", minute: "2-digit", hour12: true })}\n\n` +
+    "I've added it to your Google Calendar. 😊";
+};
+
+const formatWeeklyCalendarReply = (events) => {
+  if (!events.length) {
+    return "📅 You have no events scheduled this week. 😊";
+  }
+
+  const grouped = new Map();
+
+  events.forEach((event) => {
+    const day = event.allDay
+      ? event.start
+      : DateTime.fromISO(event.start)
+          .setZone("Asia/Kolkata")
+          .toISODate();
+
+    if (!grouped.has(day)) {
+      grouped.set(day, []);
+    }
+
+    grouped.get(day).push(event);
+  });
+
+  let reply = "📅 Your Schedule This Week\n\n";
+
+  [...grouped.entries()]
+    .sort(([first], [second]) => first.localeCompare(second))
+    .forEach(([day, dayEvents]) => {
+      const label = DateTime.fromISO(day, {
+        zone: "Asia/Kolkata",
+      }).toFormat("cccc, dd LLL");
+
+      reply += `${label}\n`;
+      dayEvents.forEach((event) => {
+        reply += `• ${formatCalendarEventTime(event)}\n  ${event.title}\n`;
+      });
+      reply += "\n";
+    });
+
+  return reply.trim();
 };

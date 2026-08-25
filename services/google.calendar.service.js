@@ -65,7 +65,7 @@ const generateAuthUrl = async (
   );
 
   const scopes = [
-    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/userinfo.email",
   ];
 
@@ -339,6 +339,129 @@ const normalizeEvent = (event) => {
   };
 };
 
+const createCalendarEvent = async ({
+  phoneNumber,
+  title,
+  start,
+  end,
+  location = null,
+  description = null,
+}) => {
+  const auth = await getAuthenticatedClient(phoneNumber);
+
+  if (!auth) {
+    return { connected: false, success: false, event: null };
+  }
+
+  if (
+    !title ||
+    !(start instanceof Date) ||
+    Number.isNaN(start.getTime()) ||
+    !(end instanceof Date) ||
+    Number.isNaN(end.getTime()) ||
+    end <= start
+  ) {
+    throw new Error("Invalid calendar event details");
+  }
+
+  const calendar = google.calendar({
+    version: "v3",
+    auth,
+  });
+
+  const response = await calendar.events.insert({
+    calendarId: "primary",
+    requestBody: {
+      summary: title.trim(),
+      description: description || undefined,
+      location: location || undefined,
+      start: {
+        dateTime: start.toISOString(),
+        timeZone: CALENDAR_TIMEZONE,
+      },
+      end: {
+        dateTime: end.toISOString(),
+        timeZone: CALENDAR_TIMEZONE,
+      },
+    },
+  });
+
+  return {
+    connected: true,
+    success: true,
+    event: normalizeEvent(response.data),
+    htmlLink: response.data?.htmlLink || null,
+  };
+};
+
+const updateCalendarEvent = async ({
+  phoneNumber,
+  eventId,
+  start,
+  end,
+}) => {
+  const auth = await getAuthenticatedClient(phoneNumber);
+
+  if (!auth) {
+    return { connected: false, success: false };
+  }
+
+  const calendar = google.calendar({
+    version: "v3",
+    auth,
+  });
+
+  const existing = await calendar.events.get({
+    calendarId: "primary",
+    eventId,
+  });
+
+  const response = await calendar.events.update({
+    calendarId: "primary",
+    eventId,
+    requestBody: {
+      ...existing.data,
+      start: {
+        dateTime: start.toISOString(),
+        timeZone: CALENDAR_TIMEZONE,
+      },
+      end: {
+        dateTime: end.toISOString(),
+        timeZone: CALENDAR_TIMEZONE,
+      },
+    },
+  });
+
+  return {
+    connected: true,
+    success: true,
+    event: normalizeEvent(response.data),
+  };
+};
+
+const deleteCalendarEvent = async ({
+  phoneNumber,
+  eventId,
+}) => {
+  const auth = await getAuthenticatedClient(phoneNumber);
+
+  if (!auth) {
+    return { connected: false, success: false };
+  }
+
+  const calendar = google.calendar({
+    version: "v3",
+    auth,
+  });
+
+  await calendar.events.delete({
+    calendarId: "primary",
+    eventId,
+  });
+
+  return { connected: true, success: true };
+};
+
 const getEventsForRange =
   async (phoneNumber, startDate, endDate) => {
     const auth =
@@ -431,6 +554,48 @@ const getTomorrowEvents = async (
 
 const getTodaysEvents = getTodayEvents;
 
+const getThisWeekEvents = async (phoneNumber) => {
+  const now = DateTime.now().setZone(CALENDAR_TIMEZONE);
+  const monday = now.startOf("week");
+
+  return getEventsForRange(
+    phoneNumber,
+    monday,
+    monday.plus({ days: 7 })
+  );
+};
+
+const findMatchingCalendarEvents = async ({
+  phoneNumber,
+  eventQuery,
+  date,
+}) => {
+  const result = date
+    ? await getEventsForDate(phoneNumber, date)
+    : await getThisWeekEvents(phoneNumber);
+
+  if (!result.connected) {
+    return result;
+  }
+
+  const query = String(eventQuery || "next").toLowerCase().trim();
+  const matches = result.events.filter((event) => {
+    if (!event.start || event.allDay) return false;
+    return query === "next" || event.title.toLowerCase().includes(query);
+  });
+
+  matches.sort((left, right) =>
+    new Date(left.start).getTime() - new Date(right.start).getTime()
+  );
+
+  return {
+    connected: true,
+    events: query === "next"
+      ? matches.filter((event) => new Date(event.start).getTime() > Date.now()).slice(0, 1)
+      : matches,
+  };
+};
+
 // ============================================================
 // CHECK CONNECTION
 // ============================================================
@@ -519,6 +684,16 @@ module.exports = {
   getEventsForDate,
 
   getEventsForRange,
+
+  createCalendarEvent,
+
+  updateCalendarEvent,
+
+  deleteCalendarEvent,
+
+  getThisWeekEvents,
+
+  findMatchingCalendarEvents,
 
   getCalendarConnection,
 

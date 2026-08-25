@@ -71,6 +71,21 @@ const reminderSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    calendarEventId: {
+      type: String,
+      default: null,
+    },
+
+    calendarEventCreated: {
+      type: Boolean,
+      default: false,
+    },
+
+    calendarEventLink: {
+      type: String,
+      default: null,
+    },
   },
   {
     timestamps: true,

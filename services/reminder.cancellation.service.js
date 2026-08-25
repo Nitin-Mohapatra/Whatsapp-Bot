@@ -559,6 +559,30 @@ const cancelLatestReminder = async (
   }
 };
 
+const cancelReminderById = async (
+  phoneNumber,
+  reminderId
+) => {
+  const reminder = await Reminder.findOneAndUpdate(
+    {
+      _id: reminderId,
+      phoneNumber,
+      status: "pending",
+    },
+    {
+      $set: {
+        status: "cancelled",
+        nextRunAt: null,
+      },
+    },
+    { new: true }
+  );
+
+  return reminder
+    ? { cancelled: true, reason: "cancelled", reminder }
+    : { cancelled: false, reason: "already_processing", reminder: null };
+};
+
 // ============================================================
 // EXPORTS
 // ============================================================
@@ -566,5 +590,6 @@ const cancelLatestReminder = async (
 module.exports = {
   cancelReminderByTask,
   cancelLatestReminder,
+  cancelReminderById,
   getActiveReminders,
 };

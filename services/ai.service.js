@@ -73,6 +73,9 @@ const normalizeRouterResult = (result) => {
     "conversation",
     "connect_google_calendar",
     "CALENDAR_QUERY",
+    "create_calendar_event",
+    "list_reminders",
+    "calendar_based_reminder",
     "cancel_reminder",
     "reschedule_reminder",
     "unknown",
@@ -129,8 +132,60 @@ const normalizeRouterResult = (result) => {
         : null,
 
     range:
-      result.range === "day"
-        ? "day"
+      result.range === "week" || result.range === "day"
+        ? result.range
+        : null,
+
+    scheduledFor:
+      typeof result.scheduledFor === "string" &&
+      result.scheduledFor.trim()
+        ? result.scheduledFor.trim()
+        : null,
+
+    title:
+      typeof result.title === "string" &&
+      result.title.trim()
+        ? result.title.trim()
+        : null,
+
+    startTime:
+      typeof result.startTime === "string" &&
+      result.startTime.trim()
+        ? result.startTime.trim()
+        : null,
+
+    endTime:
+      typeof result.endTime === "string" &&
+      result.endTime.trim()
+        ? result.endTime.trim()
+        : null,
+
+    durationMinutes:
+      Number.isFinite(Number(result.durationMinutes))
+        ? Number(result.durationMinutes)
+        : null,
+
+    location:
+      typeof result.location === "string" &&
+      result.location.trim()
+        ? result.location.trim()
+        : null,
+
+    description:
+      typeof result.description === "string" &&
+      result.description.trim()
+        ? result.description.trim()
+        : null,
+
+    eventQuery:
+      typeof result.eventQuery === "string" &&
+      result.eventQuery.trim()
+        ? result.eventQuery.trim()
+        : null,
+
+    offsetMinutes:
+      Number.isFinite(Number(result.offsetMinutes))
+        ? Number(result.offsetMinutes)
         : null,
   };
 };
@@ -452,6 +507,69 @@ const localFallbackRouter = (message) => {
   const calendarQueryPattern =
     /\b(calendar|schedule|events?|meetings?)\b|\bwhat do i have\b/;
 
+  if (/\b(this week|this week's|week)\b/.test(normalizedMessage) && calendarQueryPattern.test(normalizedMessage)) {
+    return {
+      intent: "CALENDAR_QUERY",
+      confidence: 1,
+      task: null,
+      timeText: null,
+      recurring: false,
+      date: null,
+      range: "week",
+    };
+  }
+
+  if (/\b(show|list|what are|what)\b.*\b(reminders?|reminder list)\b/.test(normalizedMessage)) {
+    return {
+      intent: "list_reminders",
+      confidence: 1,
+      task: null,
+      timeText: null,
+      recurring: false,
+    };
+  }
+
+  if (/\b(create|add|schedule|put)\b.*\b(calendar|meeting|event|dinner|gym)\b/.test(normalizedMessage)) {
+    return {
+      intent: "create_calendar_event",
+      confidence: 1,
+      task: null,
+      timeText: null,
+      recurring: false,
+    };
+  }
+
+  if (/\b(reschedule|move|change)\b.*\b(reminder|meeting|walk|study|water)\b/.test(normalizedMessage)) {
+    return {
+      intent: "reschedule_reminder",
+      confidence: 1,
+      task: null,
+      timeText: null,
+      recurring: false,
+    };
+  }
+
+  if (/\bremind me\b.*\b(before|prior to)\b.*\b(meeting|event|calendar|next)\b/.test(normalizedMessage)) {
+    const offsetMatch = normalizedMessage.match(/(\d+)\s*(minutes?|mins?|hours?|hrs?)\s*before/);
+    const amount = offsetMatch ? Number(offsetMatch[1]) : null;
+    const unit = offsetMatch?.[2] || "minutes";
+
+    return {
+      intent: "calendar_based_reminder",
+      confidence: 1,
+      task: null,
+      timeText: null,
+      recurring: false,
+      date: normalizedMessage.includes("tomorrow") ? "tomorrow" : "today",
+      eventQuery: normalizedMessage.includes("next") ? "next" : null,
+      offsetMinutes: amount
+        ? unit.startsWith("hour") || unit.startsWith("hr")
+          ? amount * 60
+          : amount
+        : null,
+    };
+  }
+
   if (
     calendarConnectPatterns.some((pattern) =>
       pattern.test(normalizedMessage)
@@ -676,6 +794,9 @@ acknowledge_reminder
 conversation
 connect_google_calendar
 CALENDAR_QUERY
+create_calendar_event
+list_reminders
+calendar_based_reminder
 cancel_reminder
 reschedule_reminder
 unknown
@@ -738,6 +859,52 @@ Return ONLY:
   "timeText": null,
   "recurring": false
 }
+
+============================================================
+CREATE CALENDAR EVENT
+============================================================
+
+For requests to add, create, or schedule an event on Google
+Calendar, return title, date, startTime, optional endTime,
+durationMinutes, location, and description. Default duration is
+60 minutes when only a start time is given.
+
+Return ONLY:
+
+{
+  "intent": "create_calendar_event",
+  "confidence": 0.98,
+  "title": "Project Discussion",
+  "date": "tomorrow",
+  "startTime": "3:00 PM",
+  "endTime": null,
+  "durationMinutes": 60,
+  "location": null,
+  "description": null
+}
+
+============================================================
+LIST REMINDERS
+============================================================
+
+Classify "show my reminders", "what are my reminders", and
+"list my pending reminders" as list_reminders.
+
+============================================================
+CALENDAR-BASED REMINDER
+============================================================
+
+Classify "remind me 30 minutes before my next meeting" and
+similar requests as calendar_based_reminder. Extract eventQuery,
+date, and offsetMinutes. If no offset is specified, return null.
+
+============================================================
+WEEKLY CALENDAR
+============================================================
+
+For "what is my schedule this week", "show my calendar this
+week", and equivalent requests, return CALENDAR_QUERY with
+range "week".
 
 ============================================================
 CALENDAR QUERY
