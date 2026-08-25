@@ -41,10 +41,14 @@ const {
   updateMemory,
 
   getRecentContext,
-
   buildMemoryContext,
 } =
   require("../services/memory.service");
+
+const {
+  cancelReminderByTask,
+  cancelLatestReminder,
+} = require("../services/reminder.cancellation.service");
 
 
 // ======================================================
@@ -335,7 +339,7 @@ const verifyWebhook =
     if (
       mode === "subscribe" &&
       token ===
-        process.env.WHATSAPP_VERIFY_TOKEN
+      process.env.WHATSAPP_VERIFY_TOKEN
     ) {
 
       console.log(
@@ -667,10 +671,10 @@ const receiveWebhook =
         timestamp:
           message.timestamp
             ? new Date(
-                Number(
-                  message.timestamp
-                ) * 1000
-              )
+              Number(
+                message.timestamp
+              ) * 1000
+            )
             : new Date(),
 
         rawPayload:
@@ -702,7 +706,7 @@ const receiveWebhook =
         });
 
       } catch (
-        memoryError
+      memoryError
       ) {
 
         console.error(
@@ -727,7 +731,7 @@ const receiveWebhook =
           );
 
       } catch (
-        contextError
+      contextError
       ) {
 
         console.error(
@@ -751,7 +755,7 @@ const receiveWebhook =
           );
 
       } catch (
-        contextError
+      contextError
       ) {
 
         console.error(
@@ -820,7 +824,7 @@ const receiveWebhook =
       // ==================================================
 
       switch (
-        aiResult.intent
+      aiResult.intent
       ) {
 
         // ==================================================
@@ -1030,7 +1034,7 @@ const receiveWebhook =
             });
 
           } catch (
-            contextError
+          contextError
           ) {
 
             console.error(
@@ -1101,7 +1105,7 @@ const receiveWebhook =
               });
 
             } catch (
-              contextError
+            contextError
             ) {
 
               console.error(
@@ -1188,7 +1192,7 @@ const receiveWebhook =
             });
 
           } catch (
-            memoryError
+          memoryError
           ) {
 
             console.error(
@@ -1295,7 +1299,7 @@ const receiveWebhook =
             }
 
           } catch (
-            memoryError
+          memoryError
           ) {
 
             console.error(
@@ -1313,22 +1317,394 @@ const receiveWebhook =
         // CANCEL REMINDER
         // ==================================================
 
+        // ======================================
+        // CANCEL REMINDER
+        // ======================================
+
         case "cancel_reminder": {
 
           console.log(
             "🗑️ Intent: CANCEL_REMINDER"
           );
 
-          /*
-           * Cancellation is intentionally left
-           * for the next development step.
-           */
+          console.log(
+            "📝 Cancellation task from AI:",
+            aiResult.task
+          );
+
+          // ==================================================
+          // CASE 1:
+          // AI identified a specific task
+          //
+          // Example:
+          //
+          // "cancel my water reminder"
+          //
+          // AI:
+          //
+          // {
+          //   intent: "cancel_reminder",
+          //   task: "water"
+          // }
+          // ==================================================
+
+          if (
+            aiResult.task &&
+            aiResult.task.trim()
+          ) {
+
+            const cancellationResult =
+              await cancelReminderByTask(
+                from,
+                aiResult.task
+              );
+
+            console.log(
+              "🗑️ Cancellation result:",
+              cancellationResult
+            );
+
+            // ----------------------------------------------
+            // SUCCESS
+            // ----------------------------------------------
+
+            if (
+              cancellationResult.cancelled &&
+              cancellationResult.reminder
+            ) {
+
+              const cancelledReminder =
+                cancellationResult.reminder;
+
+              await sendWhatsAppMessage(
+                from,
+
+                `🗑️ Reminder cancelled!\n\n` +
+                `📝 Task: ${cancelledReminder.task}`
+              );
+
+              return res.sendStatus(
+                200
+              );
+            }
+
+            // ----------------------------------------------
+            // AMBIGUOUS
+            // ----------------------------------------------
+
+            if (
+              cancellationResult.reason ===
+              "ambiguous_match"
+            ) {
+
+              const matches =
+                cancellationResult.matches || [];
+
+              let reply =
+                "I found more than one reminder that could match. Which one should I cancel?\n\n";
+
+              matches.forEach(
+                (
+                  reminder,
+                  index
+                ) => {
+
+                  reply +=
+                    `${index + 1}. ${reminder.task}`;
+
+                  if (
+                    reminder.nextRunAt
+                  ) {
+
+                    reply +=
+                      ` — ${new Date(
+                        reminder.nextRunAt
+                      ).toLocaleString(
+                        "en-IN",
+                        {
+                          timeZone:
+                            "Asia/Kolkata",
+
+                          day:
+                            "2-digit",
+
+                          month:
+                            "short",
+
+                          hour:
+                            "2-digit",
+
+                          minute:
+                            "2-digit",
+
+                          hour12:
+                            true,
+                        }
+                      )}`;
+                  }
+
+                  reply +=
+                    "\n";
+                }
+              );
+
+              await sendWhatsAppMessage(
+                from,
+                reply
+              );
+
+              return res.sendStatus(
+                200
+              );
+            }
+
+            // ----------------------------------------------
+            // NO ACTIVE REMINDERS
+            // ----------------------------------------------
+
+            if (
+              cancellationResult.reason ===
+              "no_active_reminders"
+            ) {
+
+              await sendWhatsAppMessage(
+                from,
+
+                "You don't have any active reminders to cancel. 😊"
+              );
+
+              return res.sendStatus(
+                200
+              );
+            }
+
+            // ----------------------------------------------
+            // NO MATCH
+            // ----------------------------------------------
+
+            if (
+              cancellationResult.reason ===
+              "no_matching_reminder"
+            ) {
+
+              await sendWhatsAppMessage(
+                from,
+
+                `I couldn't find an active reminder for "${aiResult.task}".\n\n` +
+                `You can ask me to cancel another reminder by mentioning its task name.`
+              );
+
+              return res.sendStatus(
+                200
+              );
+            }
+
+            // ----------------------------------------------
+            // WEAK MATCH
+            // ----------------------------------------------
+
+            if (
+              cancellationResult.reason ===
+              "weak_match"
+            ) {
+
+              await sendWhatsAppMessage(
+                from,
+
+                `I couldn't confidently identify which reminder you want to cancel.\n\n` +
+                `Please mention the reminder task more specifically.`
+              );
+
+              return res.sendStatus(
+                200
+              );
+            }
+
+            // ----------------------------------------------
+            // REMINDER ALREADY PROCESSING
+            // ----------------------------------------------
+
+            if (
+              cancellationResult.reason ===
+              "already_processing"
+            ) {
+
+              await sendWhatsAppMessage(
+                from,
+
+                "That reminder is already being processed, so I couldn't cancel it. Please try again if needed."
+              );
+
+              return res.sendStatus(
+                200
+              );
+            }
+
+            // ----------------------------------------------
+            // UNKNOWN CANCELLATION FAILURE
+            // ----------------------------------------------
+
+            await sendWhatsAppMessage(
+              from,
+
+              "I understood that you want to cancel the reminder, but I couldn't cancel it right now. Please try again."
+            );
+
+            return res.sendStatus(
+              200
+            );
+          }
+
+          // ==================================================
+          // CASE 2:
+          // NO TASK WAS PROVIDED
+          //
+          // Examples:
+          //
+          // "cancel my latest reminder"
+          // "cancel the last reminder"
+          //
+          // ==================================================
+
+          console.log(
+            "🗑️ No specific task provided. Trying latest reminder."
+          );
+
+          const latestResult =
+            await cancelLatestReminder(
+              from
+            );
+
+          console.log(
+            "🗑️ Latest cancellation result:",
+            latestResult
+          );
+
+          // ----------------------------------------------
+          // SUCCESS
+          // ----------------------------------------------
+
+          if (
+            latestResult.cancelled &&
+            latestResult.reminder
+          ) {
+
+            const cancelledReminder =
+              latestResult.reminder;
+
+            await sendWhatsAppMessage(
+              from,
+
+              `🗑️ Reminder cancelled!\n\n` +
+              `📝 Task: ${cancelledReminder.task}`
+            );
+
+            return res.sendStatus(
+              200
+            );
+          }
+
+          // ----------------------------------------------
+          // NO REMINDERS
+          // ----------------------------------------------
+
+          if (
+            latestResult.reason ===
+            "no_active_reminders"
+          ) {
+
+            await sendWhatsAppMessage(
+              from,
+
+              "You don't have any active reminders to cancel. 😊"
+            );
+
+            return res.sendStatus(
+              200
+            );
+          }
+
+          // ----------------------------------------------
+          // MULTIPLE REMINDERS
+          // ----------------------------------------------
+
+          if (
+            latestResult.reason ===
+            "multiple_reminders"
+          ) {
+
+            const matches =
+              latestResult.matches || [];
+
+            let reply =
+              "You have multiple active reminders. Which one should I cancel?\n\n";
+
+            matches.forEach(
+              (
+                reminder,
+                index
+              ) => {
+
+                reply +=
+                  `${index + 1}. ${reminder.task}`;
+
+                if (
+                  reminder.nextRunAt
+                ) {
+
+                  reply +=
+                    ` — ${new Date(
+                      reminder.nextRunAt
+                    ).toLocaleString(
+                      "en-IN",
+                      {
+                        timeZone:
+                          "Asia/Kolkata",
+
+                        day:
+                          "2-digit",
+
+                        month:
+                          "short",
+
+                        hour:
+                          "2-digit",
+
+                        minute:
+                          "2-digit",
+
+                        hour12:
+                          true,
+                      }
+                    )}`;
+                }
+
+                reply +=
+                  "\n";
+              }
+            );
+
+            reply +=
+              "\nTell me the task name you want to cancel.";
+
+            await sendWhatsAppMessage(
+              from,
+              reply
+            );
+
+            return res.sendStatus(
+              200
+            );
+          }
+
+          // ----------------------------------------------
+          // FALLBACK
+          // ----------------------------------------------
 
           await sendWhatsAppMessage(
-
             from,
 
-            "I understand you want to cancel a reminder. The cancellation feature is coming next. 👍"
+            "I couldn't find a reminder to cancel. 😊"
           );
 
           return res.sendStatus(
