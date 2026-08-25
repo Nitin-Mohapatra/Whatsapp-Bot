@@ -1,318 +1,367 @@
-const axios = require("axios");
-const FormData = require("form-data");
+// ======================================================
+// src/controllers/webhook.controller.js
+// ======================================================
 
-const Message = require("../models/message.model");
+const axios =
+  require("axios");
+
+const FormData =
+  require("form-data");
+
+const Message =
+  require("../models/message.model");
 
 const {
   sendWhatsAppMessage,
-} = require("../services/whatsapp.service");
+} =
+  require("../services/whatsapp.service");
 
 const {
   processReminderMessage,
-} = require("../services/reminder.pipeline.service");
+} =
+  require("../services/reminder.pipeline.service");
 
 const {
   acknowledgeLatestReminder,
-} = require("../services/reminder.acknowledgement.service");
+} =
+  require("../services/reminder.acknowledgement.service");
 
 const {
   analyzeMessage,
-  generateConversationResponse,
+
   extractMemory,
-} = require("../services/ai.service");
+} =
+  require("../services/ai.service");
 
 const {
   addRecentContext,
+
   saveExtractedMemory,
+
   updateMemory,
+
   getRecentContext,
+
   buildMemoryContext,
-} = require("../services/memory.service");
+} =
+  require("../services/memory.service");
 
 
 // ======================================================
 // SARVAM SPEECH TO TEXT
 // ======================================================
 
-const transcribeAudioWithSarvam = async ({
-  audioBuffer,
-  mimeType,
-  fileName,
-}) => {
+const transcribeAudioWithSarvam =
+  async ({
+    audioBuffer,
+    mimeType,
+    fileName,
+  }) => {
 
-  try {
+    try {
 
-    console.log("🎙️ Sending audio to Sarvam STT...");
-
-    if (!process.env.SARVAM_API_KEY) {
-      throw new Error(
-        "SARVAM_API_KEY is not configured"
+      console.log(
+        "🎙️ Sending audio to Sarvam STT..."
       );
-    }
 
-    const formData = new FormData();
+      if (
+        !process.env.SARVAM_API_KEY
+      ) {
 
-    formData.append(
-      "file",
-      audioBuffer,
-      {
-        filename:
-          fileName || "whatsapp-audio.ogg",
-
-        contentType:
-          mimeType || "audio/ogg",
+        throw new Error(
+          "SARVAM_API_KEY is not configured"
+        );
       }
-    );
 
-    formData.append(
-      "model",
-      process.env.SARVAM_STT_MODEL ||
-      "saaras:v3"
-    );
+      const formData =
+        new FormData();
 
-    formData.append(
-      "language_code",
-      process.env.SARVAM_LANGUAGE_CODE ||
-      "unknown"
-    );
-
-    formData.append(
-      "mode",
-      process.env.SARVAM_STT_MODE ||
-      "transcribe"
-    );
-
-    const response =
-      await axios.post(
-        "https://api.sarvam.ai/speech-to-text",
-        formData,
+      formData.append(
+        "file",
+        audioBuffer,
         {
-          headers: {
-            ...formData.getHeaders(),
+          filename:
+            fileName ||
+            "whatsapp-audio.ogg",
 
-            "api-subscription-key":
-              process.env.SARVAM_API_KEY,
-          },
-
-          maxBodyLength:
-            Infinity,
-
-          maxContentLength:
-            Infinity,
-
-          timeout:
-            60000,
+          contentType:
+            mimeType ||
+            "audio/ogg",
         }
       );
 
-    console.log(
-      "🎙️ Sarvam STT response:",
-      response.data
-    );
+      formData.append(
+        "model",
+        process.env.SARVAM_STT_MODEL ||
+        "saaras:v3"
+      );
 
-    const transcript =
-      response.data?.transcript?.trim();
+      formData.append(
+        "language_code",
+        process.env.SARVAM_LANGUAGE_CODE ||
+        "unknown"
+      );
 
-    if (!transcript) {
+      formData.append(
+        "mode",
+        process.env.SARVAM_STT_MODE ||
+        "transcribe"
+      );
+
+      const response =
+        await axios.post(
+
+          "https://api.sarvam.ai/speech-to-text",
+
+          formData,
+
+          {
+            headers: {
+
+              ...formData.getHeaders(),
+
+              "api-subscription-key":
+                process.env.SARVAM_API_KEY,
+            },
+
+            maxBodyLength:
+              Infinity,
+
+            maxContentLength:
+              Infinity,
+
+            timeout:
+              60000,
+          }
+        );
+
+      console.log(
+        "🎙️ Sarvam STT response:",
+        response.data
+      );
+
+      const transcript =
+        response.data?.transcript?.trim();
+
+      if (!transcript) {
+
+        throw new Error(
+          "Sarvam returned an empty transcript"
+        );
+      }
+
+      console.log(
+        "📝 Voice transcript:",
+        transcript
+      );
+
+      console.log(
+        "🌐 Detected language:",
+        response.data?.language_code
+      );
+
+      return {
+
+        transcript,
+
+        languageCode:
+          response.data?.language_code ||
+          null,
+
+        requestId:
+          response.data?.request_id ||
+          null,
+      };
+
+    } catch (error) {
+
+      console.error(
+        "❌ Sarvam STT error:",
+        error.response?.data ||
+        error.message
+      );
+
       throw new Error(
-        "Sarvam returned an empty transcript"
+        "Failed to transcribe WhatsApp voice message"
       );
     }
-
-    console.log(
-      "📝 Voice transcript:",
-      transcript
-    );
-
-    console.log(
-      "🌐 Detected language:",
-      response.data?.language_code
-    );
-
-    return {
-      transcript,
-
-      languageCode:
-        response.data?.language_code ||
-        null,
-
-      requestId:
-        response.data?.request_id ||
-        null,
-    };
-
-  } catch (error) {
-
-    console.error(
-      "❌ Sarvam STT error:",
-      error.response?.data ||
-      error.message
-    );
-
-    throw new Error(
-      "Failed to transcribe WhatsApp voice message"
-    );
-  }
-};
+  };
 
 
 // ======================================================
 // DOWNLOAD WHATSAPP MEDIA
 // ======================================================
 
-const downloadWhatsAppMedia = async (
-  mediaId
-) => {
+const downloadWhatsAppMedia =
+  async (
+    mediaId
+  ) => {
 
-  try {
+    try {
 
-    console.log(
-      "🎧 Getting WhatsApp media URL:",
-      mediaId
-    );
+      console.log(
+        "🎧 Getting WhatsApp media URL:",
+        mediaId
+      );
 
-    if (!process.env.WHATSAPP_ACCESS_TOKEN) {
+      if (
+        !process.env.WHATSAPP_ACCESS_TOKEN
+      ) {
+
+        throw new Error(
+          "WHATSAPP_ACCESS_TOKEN is not configured"
+        );
+      }
+
+      const mediaResponse =
+        await axios.get(
+
+          `https://graph.facebook.com/v23.0/${mediaId}`,
+
+          {
+            headers: {
+
+              Authorization:
+                `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+            },
+
+            timeout:
+              30000,
+          }
+        );
+
+      const mediaUrl =
+        mediaResponse.data?.url;
+
+      const mimeType =
+        mediaResponse.data?.mime_type ||
+        "audio/ogg";
+
+      if (!mediaUrl) {
+
+        throw new Error(
+          "WhatsApp did not return a media URL"
+        );
+      }
+
+      console.log(
+        "🔗 WhatsApp media URL received"
+      );
+
+      console.log(
+        "🎵 MIME type:",
+        mimeType
+      );
+
+      const audioResponse =
+        await axios.get(
+
+          mediaUrl,
+
+          {
+            headers: {
+
+              Authorization:
+                `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+            },
+
+            responseType:
+              "arraybuffer",
+
+            timeout:
+              30000,
+          }
+        );
+
+      const audioBuffer =
+        Buffer.from(
+          audioResponse.data
+        );
+
+      console.log(
+        "✅ WhatsApp audio downloaded:",
+        audioBuffer.length,
+        "bytes"
+      );
+
+      return {
+
+        audioBuffer,
+
+        mimeType,
+
+        fileName:
+          `whatsapp-${mediaId}.ogg`,
+      };
+
+    } catch (error) {
+
+      console.error(
+        "❌ WhatsApp media download failed:",
+        error.response?.data ||
+        error.message
+      );
+
       throw new Error(
-        "WHATSAPP_ACCESS_TOKEN is not configured"
+        "Failed to download WhatsApp voice message"
       );
     }
-
-    const mediaResponse =
-      await axios.get(
-        `https://graph.facebook.com/v23.0/${mediaId}`,
-        {
-          headers: {
-            Authorization:
-              `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-          },
-
-          timeout:
-            30000,
-        }
-      );
-
-    const mediaUrl =
-      mediaResponse.data?.url;
-
-    const mimeType =
-      mediaResponse.data?.mime_type ||
-      "audio/ogg";
-
-    if (!mediaUrl) {
-      throw new Error(
-        "WhatsApp did not return a media URL"
-      );
-    }
-
-    console.log(
-      "🔗 WhatsApp media URL received"
-    );
-
-    console.log(
-      "🎵 MIME type:",
-      mimeType
-    );
-
-    const audioResponse =
-      await axios.get(
-        mediaUrl,
-        {
-          headers: {
-            Authorization:
-              `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-          },
-
-          responseType:
-            "arraybuffer",
-
-          timeout:
-            30000,
-        }
-      );
-
-    const audioBuffer =
-      Buffer.from(
-        audioResponse.data
-      );
-
-    console.log(
-      "✅ WhatsApp audio downloaded:",
-      audioBuffer.length,
-      "bytes"
-    );
-
-    return {
-      audioBuffer,
-
-      mimeType,
-
-      fileName:
-        `whatsapp-${mediaId}.ogg`,
-    };
-
-  } catch (error) {
-
-    console.error(
-      "❌ WhatsApp media download failed:",
-      error.response?.data ||
-      error.message
-    );
-
-    throw new Error(
-      "Failed to download WhatsApp voice message"
-    );
-  }
-};
+  };
 
 
-// ========================================
+// ======================================================
 // GET /api/whatsapp/webhook
-// ========================================
+// ======================================================
 
-const verifyWebhook = (
-  req,
-  res
-) => {
+const verifyWebhook =
+  (
+    req,
+    res
+  ) => {
 
-  const mode =
-    req.query["hub.mode"];
+    const mode =
+      req.query["hub.mode"];
 
-  const token =
-    req.query["hub.verify_token"];
+    const token =
+      req.query["hub.verify_token"];
 
-  const challenge =
-    req.query["hub.challenge"];
-
-  console.log(
-    "Webhook verification request received"
-  );
-
-  if (
-    mode === "subscribe" &&
-    token ===
-    process.env.WHATSAPP_VERIFY_TOKEN
-  ) {
+    const challenge =
+      req.query["hub.challenge"];
 
     console.log(
-      "Webhook verified successfully"
+      "Webhook verification request received"
     );
 
-    return res
-      .status(200)
-      .send(challenge);
-  }
+    if (
+      mode === "subscribe" &&
+      token ===
+        process.env.WHATSAPP_VERIFY_TOKEN
+    ) {
 
-  console.log(
-    "Webhook verification failed"
-  );
+      console.log(
+        "Webhook verified successfully"
+      );
 
-  return res.sendStatus(403);
-};
+      return res
+        .status(200)
+        .send(
+          challenge
+        );
+    }
+
+    console.log(
+      "Webhook verification failed"
+    );
+
+    return res.sendStatus(
+      403
+    );
+  };
 
 
-// ========================================
+// ======================================================
 // POST /api/whatsapp/webhook
-// ========================================
+// ======================================================
 
 const receiveWebhook =
   async (
@@ -334,9 +383,9 @@ const receiveWebhook =
       const body =
         req.body;
 
-      // ========================================
+      // ==================================================
       // MAKE SURE THIS IS WHATSAPP EVENT
-      // ========================================
+      // ==================================================
 
       if (
         body.object !==
@@ -348,9 +397,9 @@ const receiveWebhook =
         );
       }
 
-      // ========================================
+      // ==================================================
       // EXTRACT MESSAGE
-      // ========================================
+      // ==================================================
 
       const entry =
         body.entry?.[0];
@@ -365,6 +414,7 @@ const receiveWebhook =
         value?.messages?.[0];
 
       // Status updates etc.
+
       if (!message) {
 
         console.log(
@@ -376,9 +426,9 @@ const receiveWebhook =
         );
       }
 
-      // ========================================
+      // ==================================================
       // MESSAGE INFORMATION
-      // ========================================
+      // ==================================================
 
       const from =
         message.from;
@@ -389,14 +439,16 @@ const receiveWebhook =
       const messageType =
         message.type;
 
-      // ========================================
+      // ==================================================
       // DUPLICATE CHECK
-      // ========================================
+      // ==================================================
 
       const existingMessage =
         await Message.findOne({
+
           whatsappMessageId:
             messageId,
+
         });
 
       if (
@@ -413,19 +465,22 @@ const receiveWebhook =
         );
       }
 
-      // ========================================
+      // ==================================================
       // MESSAGE TEXT
-      // ========================================
+      // ==================================================
 
-      let text = "";
+      let text =
+        "";
 
-      let voiceLanguage = null;
+      let voiceLanguage =
+        null;
 
-      let voiceRequestId = null;
+      let voiceRequestId =
+        null;
 
-      // ========================================
-      // TEXT
-      // ========================================
+      // ==================================================
+      // TEXT MESSAGE
+      // ==================================================
 
       if (
         messageType === "text"
@@ -436,9 +491,9 @@ const receiveWebhook =
           "";
       }
 
-      // ========================================
-      // AUDIO / VOICE
-      // ========================================
+      // ==================================================
+      // AUDIO / VOICE MESSAGE
+      // ==================================================
 
       else if (
         messageType === "audio"
@@ -458,7 +513,9 @@ const receiveWebhook =
           );
 
           await sendWhatsAppMessage(
+
             from,
+
             "Sorry, I couldn't access that voice message. Please try sending it again."
           );
 
@@ -468,9 +525,13 @@ const receiveWebhook =
         }
 
         const {
+
           audioBuffer,
+
           mimeType,
+
           fileName,
+
         } =
           await downloadWhatsAppMedia(
             mediaId
@@ -478,9 +539,13 @@ const receiveWebhook =
 
         const transcription =
           await transcribeAudioWithSarvam({
+
             audioBuffer,
+
             mimeType,
+
             fileName,
+
           });
 
         text =
@@ -503,7 +568,9 @@ const receiveWebhook =
         ) {
 
           await sendWhatsAppMessage(
+
             from,
+
             "I couldn't understand the voice message. Could you please say that again? 🎙️"
           );
 
@@ -517,9 +584,9 @@ const receiveWebhook =
         );
       }
 
-      // ========================================
+      // ==================================================
       // OTHER MESSAGE TYPES
-      // ========================================
+      // ==================================================
 
       else {
 
@@ -528,7 +595,9 @@ const receiveWebhook =
         );
 
         await sendWhatsAppMessage(
+
           from,
+
           "I can currently understand text and voice messages. 😊"
         );
 
@@ -536,6 +605,10 @@ const receiveWebhook =
           200
         );
       }
+
+      // ==================================================
+      // LOG MESSAGE
+      // ==================================================
 
       console.log(
         "From:",
@@ -552,9 +625,9 @@ const receiveWebhook =
         text
       );
 
-      // ========================================
+      // ==================================================
       // FINAL TEXT SAFETY CHECK
-      // ========================================
+      // ==================================================
 
       if (
         !text.trim()
@@ -565,7 +638,9 @@ const receiveWebhook =
         );
 
         await sendWhatsAppMessage(
+
           from,
+
           "I couldn't understand that message. Could you try again? 😊"
         );
 
@@ -574,9 +649,9 @@ const receiveWebhook =
         );
       }
 
-      // ========================================
+      // ==================================================
       // SAVE INCOMING MESSAGE
-      // ========================================
+      // ==================================================
 
       await Message.create({
 
@@ -592,23 +667,24 @@ const receiveWebhook =
         timestamp:
           message.timestamp
             ? new Date(
-              Number(
-                message.timestamp
-              ) * 1000
-            )
+                Number(
+                  message.timestamp
+                ) * 1000
+              )
             : new Date(),
 
         rawPayload:
           body,
+
       });
 
       console.log(
         "✅ Incoming message saved"
       );
 
-      // ========================================
-      // SAVE SHORT-TERM MEMORY
-      // ========================================
+      // ==================================================
+      // SAVE SHORT-TERM USER CONTEXT
+      // ==================================================
 
       try {
 
@@ -626,7 +702,7 @@ const receiveWebhook =
         });
 
       } catch (
-      memoryError
+        memoryError
       ) {
 
         console.error(
@@ -635,13 +711,73 @@ const receiveWebhook =
         );
       }
 
-      // ========================================
+      // ==================================================
+      // GET RECENT CONTEXT
+      // ==================================================
+
+      let recentContext =
+        [];
+
+      try {
+
+        recentContext =
+          await getRecentContext(
+            from,
+            15
+          );
+
+      } catch (
+        contextError
+      ) {
+
+        console.error(
+          "⚠️ Failed to load recent context:",
+          contextError.message
+        );
+      }
+
+      // ==================================================
+      // GET LONG-TERM MEMORY
+      // ==================================================
+
+      let existingMemory =
+        "";
+
+      try {
+
+        existingMemory =
+          await buildMemoryContext(
+            from
+          );
+
+      } catch (
+        contextError
+      ) {
+
+        console.error(
+          "⚠️ Failed to load long-term memory:",
+          contextError.message
+        );
+      }
+
+      // ==================================================
       // AI ROUTER
-      // ========================================
+      // ==================================================
 
       const aiResult =
         await analyzeMessage(
-          text
+
+          text,
+
+          {
+            history:
+              recentContext,
+
+            userContext:
+              existingMemory,
+
+          }
+
         );
 
       console.log(
@@ -653,9 +789,9 @@ const receiveWebhook =
         )
       );
 
-      // ========================================
+      // ==================================================
       // SAFETY CHECK
-      // ========================================
+      // ==================================================
 
       if (
         !aiResult ||
@@ -668,7 +804,9 @@ const receiveWebhook =
         );
 
         await sendWhatsAppMessage(
+
           from,
+
           "Sorry, I couldn't understand that. Could you try again?"
         );
 
@@ -677,17 +815,17 @@ const receiveWebhook =
         );
       }
 
-      // ========================================
+      // ==================================================
       // ROUTE INTENT
-      // ========================================
+      // ==================================================
 
       switch (
-      aiResult.intent
+        aiResult.intent
       ) {
 
-        // ======================================
+        // ==================================================
         // CREATE REMINDER
-        // ======================================
+        // ==================================================
 
         case "create_reminder": {
 
@@ -704,9 +842,8 @@ const receiveWebhook =
               message:
                 text,
 
-              // IMPORTANT:
-              // Pass the already analyzed AI result.
               aiResult,
+
             });
 
           console.log(
@@ -714,9 +851,9 @@ const receiveWebhook =
             result
           );
 
-          // --------------------------------------
-          // Pipeline failed
-          // --------------------------------------
+          // ----------------------------------------------
+          // PIPELINE FAILED
+          // ----------------------------------------------
 
           if (
             !result ||
@@ -736,6 +873,7 @@ const receiveWebhook =
               result?.reason ===
               "missing_task"
             ) {
+
               failureMessage =
                 "I understood the reminder, but I couldn't figure out what you want me to remind you about.";
             }
@@ -744,6 +882,7 @@ const receiveWebhook =
               result?.reason ===
               "invalid_scheduled_time"
             ) {
+
               failureMessage =
                 "I understood the task, but I couldn't determine a valid time. Please tell me when you'd like the reminder.";
             }
@@ -752,6 +891,7 @@ const receiveWebhook =
               result?.reason ===
               "scheduled_time_in_past"
             ) {
+
               failureMessage =
                 "That time has already passed. Please give me a future time.";
             }
@@ -760,12 +900,15 @@ const receiveWebhook =
               result?.reason ===
               "missing_recurring_interval"
             ) {
+
               failureMessage =
                 "I understood that you want a recurring reminder, but I couldn't determine how often it should repeat.";
             }
 
             await sendWhatsAppMessage(
+
               from,
+
               failureMessage
             );
 
@@ -774,9 +917,9 @@ const receiveWebhook =
             );
           }
 
-          // --------------------------------------
+          // ----------------------------------------------
           // SUCCESS
-          // --------------------------------------
+          // ----------------------------------------------
 
           const reminder =
             result.reminder;
@@ -792,8 +935,11 @@ const receiveWebhook =
               new Date(
                 reminder.scheduledFor
               ).toLocaleString(
+
                 "en-IN",
+
                 {
+
                   timeZone:
                     "Asia/Kolkata",
 
@@ -814,6 +960,7 @@ const receiveWebhook =
 
                   hour12:
                     true,
+
                 }
               );
           }
@@ -859,99 +1006,13 @@ const receiveWebhook =
             `I'll remind you at the scheduled time. 😊`;
 
           await sendWhatsAppMessage(
+
             from,
+
             reply
           );
 
-          return res.sendStatus(
-            200
-          );
-        }
-        // ======================================
-        // ACKNOWLEDGE REMINDER
-        // ======================================
-
-        case "acknowledge_reminder": {
-
-          console.log(
-            "✅ Intent: ACKNOWLEDGE_REMINDER"
-          );
-
-          const acknowledgmentResult =
-            await acknowledgeLatestReminder(
-              from
-            );
-
-          if (
-            acknowledgmentResult &&
-            acknowledgmentResult.acknowledged
-          ) {
-
-            console.log(
-              "✅ Reminder acknowledged:",
-              acknowledgmentResult
-                .reminder
-                .task
-            );
-
-            await sendWhatsAppMessage(
-              from,
-
-              `✅ Got it! "${acknowledgmentResult.reminder.task}" has been marked as completed.`
-            );
-
-          } else {
-
-            console.log(
-              "ℹ️ No pending reminder found to acknowledge"
-            );
-
-            await sendWhatsAppMessage(
-              from,
-
-              "👍 Got it!"
-            );
-          }
-
-          return res.sendStatus(
-            200
-          );
-        }
-
-        // ======================================
-        // NORMAL CONVERSATION
-        // ======================================
-
-        case "conversation": {
-
-          console.log(
-            "💬 Intent: CONVERSATION"
-          );
-
-          const reply =
-            await generateConversationResponse({
-
-              message:
-                text,
-
-              phoneNumber:
-                from,
-
-            });
-
-          console.log(
-            "🤖 AI conversation response:",
-            reply
-          );
-
-          await sendWhatsAppMessage(
-            from,
-            reply
-          );
-
-          // --------------------------------------
-          // Save assistant response
-          // --------------------------------------
+          // Save assistant reminder response
 
           try {
 
@@ -969,7 +1030,165 @@ const receiveWebhook =
             });
 
           } catch (
-          memoryError
+            contextError
+          ) {
+
+            console.error(
+              "⚠️ Failed to save reminder response context:",
+              contextError.message
+            );
+          }
+
+          return res.sendStatus(
+            200
+          );
+        }
+
+        // ==================================================
+        // ACKNOWLEDGE REMINDER
+        // ==================================================
+
+        case "acknowledge_reminder": {
+
+          console.log(
+            "✅ Intent: ACKNOWLEDGE_REMINDER"
+          );
+
+          const acknowledgmentResult =
+            await acknowledgeLatestReminder(
+              from
+            );
+
+          if (
+            acknowledgmentResult &&
+            acknowledgmentResult.acknowledged
+          ) {
+
+            const completedTask =
+              acknowledgmentResult
+                ?.reminder
+                ?.task ||
+              "reminder";
+
+            console.log(
+              "✅ Reminder acknowledged:",
+              completedTask
+            );
+
+            const reply =
+              `✅ Got it! "${completedTask}" has been marked as completed.`;
+
+            await sendWhatsAppMessage(
+
+              from,
+
+              reply
+            );
+
+            try {
+
+              await addRecentContext({
+
+                phoneNumber:
+                  from,
+
+                role:
+                  "assistant",
+
+                content:
+                  reply,
+
+              });
+
+            } catch (
+              contextError
+            ) {
+
+              console.error(
+                "⚠️ Failed to save acknowledgement context:",
+                contextError.message
+              );
+            }
+
+          } else {
+
+            console.log(
+              "ℹ️ No pending reminder found to acknowledge"
+            );
+
+            await sendWhatsAppMessage(
+
+              from,
+
+              "👍 Got it!"
+            );
+          }
+
+          return res.sendStatus(
+            200
+          );
+        }
+
+        // ==================================================
+        // NORMAL CONVERSATION
+        // ==================================================
+
+        case "conversation": {
+
+          console.log(
+            "💬 Intent: CONVERSATION"
+          );
+
+          /*
+           * IMPORTANT:
+           *
+           * analyzeMessage() has already generated
+           * the conversation response.
+           *
+           * DO NOT call:
+           *
+           * generateConversationResponse()
+           *
+           * because it does not exist anymore.
+           */
+
+          const reply =
+            aiResult.response ||
+            "I'm here 😊 Tell me what's on your mind.";
+
+          console.log(
+            "🤖 AI conversation response:",
+            reply
+          );
+
+          await sendWhatsAppMessage(
+
+            from,
+
+            reply
+          );
+
+          // ==================================================
+          // SAVE ASSISTANT RESPONSE
+          // ==================================================
+
+          try {
+
+            await addRecentContext({
+
+              phoneNumber:
+                from,
+
+              role:
+                "assistant",
+
+              content:
+                reply,
+
+            });
+
+          } catch (
+            memoryError
           ) {
 
             console.error(
@@ -978,26 +1197,26 @@ const receiveWebhook =
             );
           }
 
-          // --------------------------------------
-          // Extract long-term memory
-          // --------------------------------------
+          // ==================================================
+          // EXTRACT LONG-TERM MEMORY
+          // ==================================================
 
           try {
 
-            const recentContext =
+            console.log(
+              "🧠 Starting memory extraction..."
+            );
+
+            const latestRecentContext =
               await getRecentContext(
                 from,
                 10
               );
 
-            const existingMemory =
+            const latestExistingMemory =
               await buildMemoryContext(
                 from
               );
-
-            console.log(
-              "🧠 Existing memory loaded for extraction"
-            );
 
             const memory =
               await extractMemory({
@@ -1008,14 +1227,16 @@ const receiveWebhook =
                 phoneNumber:
                   from,
 
-                recentContext,
+                recentContext:
+                  latestRecentContext,
 
-                existingMemory,
+                existingMemory:
+                  latestExistingMemory,
 
               });
 
             console.log(
-              "🧠 Context-aware extracted memory:",
+              "🧠 Extracted memory:",
               memory
             );
 
@@ -1066,10 +1287,15 @@ const receiveWebhook =
                   "✅ New memory saved successfully"
                 );
               }
+            } else {
+
+              console.log(
+                "ℹ️ No new long-term memory detected"
+              );
             }
 
           } catch (
-          memoryError
+            memoryError
           ) {
 
             console.error(
@@ -1083,9 +1309,9 @@ const receiveWebhook =
           );
         }
 
-        // ======================================
+        // ==================================================
         // CANCEL REMINDER
-        // ======================================
+        // ==================================================
 
         case "cancel_reminder": {
 
@@ -1093,7 +1319,13 @@ const receiveWebhook =
             "🗑️ Intent: CANCEL_REMINDER"
           );
 
+          /*
+           * Cancellation is intentionally left
+           * for the next development step.
+           */
+
           await sendWhatsAppMessage(
+
             from,
 
             "I understand you want to cancel a reminder. The cancellation feature is coming next. 👍"
@@ -1104,9 +1336,9 @@ const receiveWebhook =
           );
         }
 
-        // ======================================
+        // ==================================================
         // RESCHEDULE REMINDER
-        // ======================================
+        // ==================================================
 
         case "reschedule_reminder": {
 
@@ -1114,7 +1346,13 @@ const receiveWebhook =
             "🔄 Intent: RESCHEDULE_REMINDER"
           );
 
+          /*
+           * Rescheduling is intentionally left
+           * for the next development step.
+           */
+
           await sendWhatsAppMessage(
+
             from,
 
             "I understand you want to reschedule a reminder. The rescheduling feature is coming next. 👍"
@@ -1125,9 +1363,36 @@ const receiveWebhook =
           );
         }
 
-        // ======================================
+        // ==================================================
+        // LIST REMINDERS
+        // ==================================================
+
+        case "list_reminders": {
+
+          console.log(
+            "📋 Intent: LIST_REMINDERS"
+          );
+
+          /*
+           * Listing reminders will be implemented
+           * together with cancellation/rescheduling.
+           */
+
+          await sendWhatsAppMessage(
+
+            from,
+
+            "I understand you want to see your reminders. The reminder list feature is coming next. 👍"
+          );
+
+          return res.sendStatus(
+            200
+          );
+        }
+
+        // ==================================================
         // UNKNOWN
-        // ======================================
+        // ==================================================
 
         case "unknown": {
 
@@ -1136,6 +1401,7 @@ const receiveWebhook =
           );
 
           await sendWhatsAppMessage(
+
             from,
 
             "I'm not completely sure what you mean. You can ask me to create a reminder, or we can just chat 😊"
@@ -1146,9 +1412,9 @@ const receiveWebhook =
           );
         }
 
-        // ======================================
+        // ==================================================
         // FALLBACK
-        // ======================================
+        // ==================================================
 
         default: {
 
@@ -1158,6 +1424,7 @@ const receiveWebhook =
           );
 
           await sendWhatsAppMessage(
+
             from,
 
             "I'm not sure how to handle that yet. 😊"
@@ -1172,14 +1439,14 @@ const receiveWebhook =
     } catch (error) {
 
       console.error(
-        "Webhook processing error:",
+        "❌ Webhook processing error:",
         error.response?.data ||
         error.message
       );
 
       /*
-      Always acknowledge Meta.
-      */
+       * Always acknowledge Meta.
+       */
 
       return res.sendStatus(
         200
@@ -1188,7 +1455,14 @@ const receiveWebhook =
   };
 
 
+// ======================================================
+// EXPORTS
+// ======================================================
+
 module.exports = {
+
   verifyWebhook,
+
   receiveWebhook,
+
 };
