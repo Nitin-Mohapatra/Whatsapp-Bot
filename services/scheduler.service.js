@@ -13,10 +13,22 @@ const {
 } = require("./routine.awareness.service");
 
 
+// ============================================================
+// START SCHEDULER
+// ============================================================
+
 const startScheduler = () => {
 
   console.log(
-    "⏰ Reminder scheduler started"
+    "======================================"
+  );
+
+  console.log(
+    "⏰ REMINDER SCHEDULER STARTED"
+  );
+
+  console.log(
+    "======================================"
   );
 
 
@@ -27,23 +39,45 @@ const startScheduler = () => {
   setInterval(
     async () => {
 
-      await processDueReminders();
+      try {
+
+        await processDueReminders();
+
+      } catch (error) {
+
+        console.error(
+          "❌ Reminder scheduler error:",
+          error.message
+        );
+      }
 
     },
+
     10 * 1000
   );
 
 
   // ========================================================
-  // NO REPLY CHECK
+  // NO REPLY / TWILIO
   // ========================================================
 
   setInterval(
     async () => {
 
-      await checkForNoReplyReminders();
+      try {
+
+        await checkForNoReplyReminders();
+
+      } catch (error) {
+
+        console.error(
+          "❌ Escalation scheduler error:",
+          error.message
+        );
+      }
 
     },
+
     10 * 1000
   );
 
@@ -55,15 +89,34 @@ const startScheduler = () => {
   setInterval(
     async () => {
 
-      await checkRoutineAwareness();
+      try {
+
+        await checkRoutineAwareness();
+
+      } catch (error) {
+
+        console.error(
+          "❌ Routine scheduler error:",
+          error.message
+        );
+      }
 
     },
+
     60 * 1000
   );
 
 
   console.log(
-    "🧠 Routine awareness scheduler started"
+    "⏰ Reminder polling: every 10 seconds"
+  );
+
+  console.log(
+    "📞 Escalation polling: every 10 seconds"
+  );
+
+  console.log(
+    "🧠 Routine polling: every 60 seconds"
   );
 };
 
