@@ -50,6 +50,10 @@ const {
   cancelLatestReminder,
 } = require("../services/reminder.cancellation.service");
 
+const {
+  generateAuthUrl,
+} = require("../services/google.calendar.service");
+
 
 // ======================================================
 // SARVAM SPEECH TO TEXT
@@ -826,6 +830,39 @@ const receiveWebhook =
       switch (
       aiResult.intent
       ) {
+
+        // ==================================================
+        // CONNECT GOOGLE CALENDAR
+        // ==================================================
+
+        case "connect_google_calendar": {
+
+          console.log(
+            "[CALENDAR] Google Calendar connection requested"
+          );
+
+          const authUrl =
+            await generateAuthUrl(from);
+
+          console.log(
+            "[CALENDAR] OAuth URL generated"
+          );
+
+          const reply =
+            "📅 Let's connect your Google Calendar.\n\n" +
+            "Tap this link to authorize access:\n\n" +
+            `${authUrl}\n\n` +
+            "After you authorize Google Calendar, I'll connect it to your assistant.";
+
+          await sendWhatsAppMessage(
+            from,
+            reply
+          );
+
+          return res.sendStatus(
+            200
+          );
+        }
 
         // ==================================================
         // CREATE REMINDER

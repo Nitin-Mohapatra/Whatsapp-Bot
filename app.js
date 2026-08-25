@@ -7,6 +7,8 @@ const aiRoutes = require("./routes/ai.routes");
 
 const reminderRoutes = require("./routes/reminder.routes");
 
+const googleCalendarRoutes = require("./routes/google.calendar.routes");
+
 const app = express();
 
 app.use(cors());
@@ -26,5 +28,10 @@ app.use("/api/whatsapp", webhookRoutes);
 app.use("/api/reminders", reminderRoutes);
 
 app.use("/api/ai", aiRoutes);
+
+app.use(
+  "/api/google-calendar",
+  googleCalendarRoutes
+);
 
 module.exports = app;

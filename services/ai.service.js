@@ -69,6 +69,7 @@ const normalizeRouterResult = (result) => {
     "create_reminder",
     "acknowledge_reminder",
     "conversation",
+    "connect_google_calendar",
     "cancel_reminder",
     "reschedule_reminder",
     "unknown",
@@ -415,6 +416,34 @@ const localFallbackRouter = (message) => {
     };
   }
 
+  const normalizedMessage = message
+    .trim()
+    .toLowerCase()
+    .replace(/[!?.,]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const calendarConnectPatterns = [
+    /\bconnect\s+(my\s+)?(google\s+)?calendar(\s+account)?\b/,
+    /\blink\s+(my\s+)?(google\s+)?calendar(\s+account)?\b/,
+    /\bsync\s+(my\s+)?google\s+calendar\b/,
+    /\bi want to connect (my\s+)?(google\s+)?calendar\b/,
+  ];
+
+  if (
+    calendarConnectPatterns.some((pattern) =>
+      pattern.test(normalizedMessage)
+    )
+  ) {
+    return {
+      intent: "connect_google_calendar",
+      confidence: 1,
+      task: null,
+      timeText: null,
+      recurring: false,
+    };
+  }
+
   if (
     looksLikeReminder(message)
   ) {
@@ -588,6 +617,7 @@ ALLOWED INTENTS
 create_reminder
 acknowledge_reminder
 conversation
+connect_google_calendar
 cancel_reminder
 reschedule_reminder
 unknown
@@ -621,6 +651,33 @@ Return:
   "confidence": 0.99,
   "task": "drink water",
   "timeText": "at 11",
+  "recurring": false
+}
+
+============================================================
+CONNECT GOOGLE CALENDAR
+============================================================
+
+Recognize requests to connect, link, or sync the user's Google
+Calendar account. Examples:
+
+"connect my google calendar"
+"connect google calendar"
+"connect my calendar"
+"link my google calendar"
+"link my calendar"
+"sync my google calendar"
+"I want to connect my calendar"
+"connect calendar"
+"connect my Google Calendar account"
+
+Return ONLY:
+
+{
+  "intent": "connect_google_calendar",
+  "confidence": 1,
+  "task": null,
+  "timeText": null,
   "recurring": false
 }
 

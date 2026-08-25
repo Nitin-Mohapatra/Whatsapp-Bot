@@ -1,5 +1,7 @@
 const { google } = require("googleapis");
 
+const crypto = require("crypto");
+
 const GoogleCalendar =
   require("../models/googleCalendar.model");
 
@@ -29,11 +31,36 @@ const createOAuthClient = () => {
 // AUTH URL
 // ============================================================
 
-const generateAuthUrl = (
+const generateAuthUrl = async (
   phoneNumber
 ) => {
   const oauth2Client =
     createOAuthClient();
+
+  const state =
+    crypto.randomBytes(32).toString("hex");
+
+  await GoogleCalendar.findOneAndUpdate(
+    {
+      phoneNumber,
+    },
+    {
+      $set: {
+        oauthState: state,
+        oauthStateExpiresAt: new Date(
+          Date.now() + 10 * 60 * 1000
+        ),
+        updatedAt: new Date(),
+      },
+      $setOnInsert: {
+        phoneNumber,
+        connected: false,
+      },
+    },
+    {
+      upsert: true,
+    }
+  );
 
   const scopes = [
     "https://www.googleapis.com/auth/calendar.readonly",
@@ -47,8 +74,52 @@ const generateAuthUrl = (
 
     scope: scopes,
 
-    state: phoneNumber,
+    state,
   });
+};
+
+const exchangeCodeForTokens = async ({
+  code,
+  state,
+}) => {
+  const calendar =
+    await GoogleCalendar.findOne({
+      oauthState: state,
+      oauthStateExpiresAt: {
+        $gt: new Date(),
+      },
+    }).select(
+      "+oauthState +oauthStateExpiresAt"
+    );
+
+  if (!calendar) {
+    throw new Error("Invalid or expired Google OAuth state");
+  }
+
+  const oauth2Client =
+    createOAuthClient();
+
+  const tokenResponse =
+    await oauth2Client.getToken(code);
+
+  await saveGoogleTokens({
+    phoneNumber: calendar.phoneNumber,
+    tokens: tokenResponse.tokens,
+  });
+
+  await GoogleCalendar.updateOne(
+    {
+      _id: calendar._id,
+    },
+    {
+      $set: {
+        oauthState: null,
+        oauthStateExpiresAt: null,
+      },
+    }
+  );
+
+  return calendar.phoneNumber;
 };
 
 // ============================================================
@@ -418,6 +489,8 @@ module.exports = {
   createOAuthClient,
 
   generateAuthUrl,
+
+  exchangeCodeForTokens,
 
   saveGoogleTokens,
 
