@@ -682,7 +682,7 @@ const receiveWebhook =
       // ========================================
 
       switch (
-        aiResult.intent
+      aiResult.intent
       ) {
 
         // ======================================
@@ -691,328 +691,182 @@ const receiveWebhook =
 
         case "create_reminder": {
 
-  console.log(
-    "📅 Intent: CREATE_REMINDER"
-  );
-
-
-  // ========================================================
-  // GET STRUCTURED REMINDERS FROM AI
-  // ========================================================
-
-  const reminders =
-    Array.isArray(
-      aiResult.reminders
-    )
-      ? aiResult.reminders
-      : [];
-
-
-  // ========================================================
-  // BACKWARD COMPATIBILITY
-  // ========================================================
-
-  let normalizedReminders =
-    reminders;
-
-
-  if (
-    normalizedReminders.length === 0 &&
-    aiResult.task &&
-    aiResult.timeText
-  ) {
-
-    normalizedReminders = [
-      {
-        task:
-          aiResult.task,
-
-        timeText:
-          aiResult.timeText,
-
-        recurring:
-          Boolean(
-            aiResult.recurring
-          ),
-      },
-    ];
-  }
-
-
-  console.log(
-    "📋 Structured reminders:",
-    JSON.stringify(
-      normalizedReminders,
-      null,
-      2
-    )
-  );
-
-
-  // ========================================================
-  // NO REMINDERS
-  // ========================================================
-
-  if (
-    normalizedReminders.length === 0
-  ) {
-
-    console.log(
-      "⚠️ Reminder intent detected but no reminder data found"
-    );
-
-
-    await sendWhatsAppMessage(
-      from,
-
-      "I understood that you want reminders, but I couldn't figure out the task and time. Could you tell me what I should remind you about and when?"
-    );
-
-
-    return res.sendStatus(
-      200
-    );
-  }
-
-
-  // ========================================================
-  // CREATE REMINDERS
-  // ========================================================
-
-  const createdReminders = [];
-
-  const failedReminders = [];
-
-
-  for (
-    let i = 0;
-    i < normalizedReminders.length;
-    i++
-  ) {
-
-    const reminderData =
-      normalizedReminders[i];
-
-
-    console.log(
-      "--------------------------------------"
-    );
-
-    console.log(
-      `⏰ Creating reminder ${i + 1}/${normalizedReminders.length}`
-    );
-
-    console.log(
-      "📝 Task:",
-      reminderData.task
-    );
-
-    console.log(
-      "🕐 Time:",
-      reminderData.timeText
-    );
-
-    console.log(
-      "🔁 Recurring:",
-      reminderData.recurring
-    );
-
-
-    try {
-
-      /*
-       * IMPORTANT:
-       *
-       * We now pass structured data directly.
-       *
-       * NO:
-       *
-       * "Remind me to..."
-       *
-       * NO second AI call.
-       */
-
-      const result =
-        await processReminderMessage({
-          phoneNumber:
-            from,
-
-          task:
-            reminderData.task,
-
-          timeText:
-            reminderData.timeText,
-
-          recurring:
-            Boolean(
-              reminderData.recurring
-            ),
-        });
-
-
-      if (
-        result &&
-        result.isReminder &&
-        result.reminder
-      ) {
-
-        createdReminders.push(
-          result.reminder
-        );
-
-
-        console.log(
-          "✅ Reminder created:",
-          result.reminder._id
-        );
-
-      } else {
-
-        failedReminders.push(
-          reminderData
-        );
-
-
-        console.log(
-          "❌ Reminder was not created:",
-          reminderData
-        );
-      }
-
-
-    } catch (reminderError) {
-
-      console.error(
-        "❌ Reminder creation failed:",
-        reminderError.message
-      );
-
-
-      failedReminders.push({
-        ...reminderData,
-
-        error:
-          reminderError.message,
-      });
-    }
-  }
-
-
-  // ========================================================
-  // NOTHING CREATED
-  // ========================================================
-
-  if (
-    createdReminders.length === 0
-  ) {
-
-    await sendWhatsAppMessage(
-      from,
-
-      "I understood the reminders, but I couldn't schedule them. Please try again."
-    );
-
-
-    return res.sendStatus(
-      200
-    );
-  }
-
-
-  // ========================================================
-  // RESPONSE
-  // ========================================================
-
-  let reply =
-    createdReminders.length === 1
-      ? "✅ Reminder created!\n\n"
-      : `✅ ${createdReminders.length} reminders created!\n\n`;
-
-
-  createdReminders.forEach(
-    (
-      reminder,
-      index
-    ) => {
-
-      reply +=
-        `📝 ${index + 1}. ${reminder.task}\n`;
-
-
-      if (
-        reminder.reminderType ===
-        "one_time"
-      ) {
-
-        reply +=
-          `⏰ ${new Date(
-            reminder.nextRunAt
-          ).toLocaleString(
-            "en-IN",
-            {
-              timeZone:
-                "Asia/Kolkata",
-
-              dateStyle:
-                "medium",
-
-              timeStyle:
-                "short",
+          console.log(
+            "📅 Intent: CREATE_REMINDER"
+          );
+
+          const result =
+            await processReminderMessage({
+
+              phoneNumber:
+                from,
+
+              message:
+                text,
+
+              // IMPORTANT:
+              // Pass the already analyzed AI result.
+              aiResult,
+            });
+
+          console.log(
+            "📋 Reminder pipeline result:",
+            result
+          );
+
+          // --------------------------------------
+          // Pipeline failed
+          // --------------------------------------
+
+          if (
+            !result ||
+            !result.isReminder ||
+            !result.reminder
+          ) {
+
+            console.log(
+              "⚠️ Reminder could not be created:",
+              result?.reason
+            );
+
+            let failureMessage =
+              "I understood that you want a reminder, but I couldn't schedule it.";
+
+            if (
+              result?.reason ===
+              "missing_task"
+            ) {
+              failureMessage =
+                "I understood the reminder, but I couldn't figure out what you want me to remind you about.";
             }
-          )}\n\n`;
 
-      } else {
+            if (
+              result?.reason ===
+              "invalid_scheduled_time"
+            ) {
+              failureMessage =
+                "I understood the task, but I couldn't determine a valid time. Please tell me when you'd like the reminder.";
+            }
 
-        reply +=
-          `🔁 Every ${reminder.intervalMinutes} minutes\n\n`;
-      }
-    }
-  );
+            if (
+              result?.reason ===
+              "scheduled_time_in_past"
+            ) {
+              failureMessage =
+                "That time has already passed. Please give me a future time.";
+            }
 
+            if (
+              result?.reason ===
+              "missing_recurring_interval"
+            ) {
+              failureMessage =
+                "I understood that you want a recurring reminder, but I couldn't determine how often it should repeat.";
+            }
 
-  // ========================================================
-  // PARTIAL FAILURE
-  // ========================================================
+            await sendWhatsAppMessage(
+              from,
+              failureMessage
+            );
 
-  if (
-    failedReminders.length > 0
-  ) {
+            return res.sendStatus(
+              200
+            );
+          }
 
-    reply +=
-      `⚠️ I couldn't create ${failedReminders.length} reminder${failedReminders.length > 1 ? "s" : ""}:\n`;
+          // --------------------------------------
+          // SUCCESS
+          // --------------------------------------
 
+          const reminder =
+            result.reminder;
 
-    failedReminders.forEach(
-      (
-        reminder
-      ) => {
+          let scheduledText =
+            "";
 
-        reply +=
-          `• ${reminder.task} — ${reminder.timeText}\n`;
-      }
-    );
+          if (
+            reminder.scheduledFor
+          ) {
 
-  } else {
+            scheduledText =
+              new Date(
+                reminder.scheduledFor
+              ).toLocaleString(
+                "en-IN",
+                {
+                  timeZone:
+                    "Asia/Kolkata",
 
-    reply +=
-      "I'll remind you at the scheduled times. 😊";
-  }
+                  day:
+                    "2-digit",
 
+                  month:
+                    "short",
 
-  // ========================================================
-  // SEND CONFIRMATION
-  // ========================================================
+                  year:
+                    "numeric",
 
-  await sendWhatsAppMessage(
-    from,
-    reply
-  );
+                  hour:
+                    "2-digit",
 
+                  minute:
+                    "2-digit",
 
-  return res.sendStatus(
-    200
-  );
-}
+                  hour12:
+                    true,
+                }
+              );
+          }
+
+          let reply =
+            `✅ Reminder created!\n\n` +
+            `📝 Task: ${reminder.task}\n`;
+
+          if (
+            reminder.reminderType ===
+            "one_time"
+          ) {
+
+            reply +=
+              `⏰ ${scheduledText}\n\n`;
+
+          } else {
+
+            reply +=
+              `🔁 Recurring reminder\n`;
+
+            if (
+              reminder.intervalMinutes
+            ) {
+
+              reply +=
+                `⏱️ Every ${reminder.intervalMinutes} minutes\n`;
+            }
+
+            if (
+              scheduledText
+            ) {
+
+              reply +=
+                `⏰ First reminder: ${scheduledText}\n`;
+            }
+
+            reply +=
+              `\n`;
+          }
+
+          reply +=
+            `I'll remind you at the scheduled time. 😊`;
+
+          await sendWhatsAppMessage(
+            from,
+            reply
+          );
+
+          return res.sendStatus(
+            200
+          );
+        }
         // ======================================
         // ACKNOWLEDGE REMINDER
         // ======================================

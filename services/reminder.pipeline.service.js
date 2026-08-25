@@ -1,206 +1,320 @@
+// src/services/reminder.pipeline.service.js
+
 const Reminder = require("../models/reminder.model");
 
-const {
-  parseReminder,
-} = require("./ai.service");
+/*
+|--------------------------------------------------------------------------
+| Process Reminder Message
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+|
+| The AI has ALREADY analyzed the message in webhook.controller.js.
+|
+| We do NOT call the AI again here.
+|
+| The controller passes:
+|
+| {
+|   intent,
+|   task,
+|   date,
+|   time,
+|   scheduledFor,
+|   recurring,
+|   recurrence
+| }
+|
+|--------------------------------------------------------------------------
+*/
 
-const {
-  parseReminderTime,
-} = require("./time.service");
-
-
-// ============================================================
-// CREATE REMINDER FROM STRUCTURED DATA
-// ============================================================
-
-const createReminderFromData = async ({
+const processReminderMessage = async ({
   phoneNumber,
-  task,
-  timeText,
-  recurring = false,
+  message,
+  aiResult,
 }) => {
   try {
-    console.log("======================================");
-    console.log("⏰ CREATE REMINDER");
-    console.log("======================================");
-
-    console.log("📱 Phone:", phoneNumber);
-    console.log("📝 Task:", task);
-    console.log("🕐 Time:", timeText);
-    console.log("🔁 Recurring:", recurring);
-
-
-    // ----------------------------------------------------------
-    // VALIDATION
-    // ----------------------------------------------------------
-
-    if (!phoneNumber) {
-      throw new Error(
-        "phoneNumber is required"
-      );
-    }
-
-    if (
-      !task ||
-      typeof task !== "string" ||
-      !task.trim()
-    ) {
-      throw new Error(
-        "Reminder task is required"
-      );
-    }
-
-    if (
-      !timeText ||
-      typeof timeText !== "string" ||
-      !timeText.trim()
-    ) {
-      throw new Error(
-        "Reminder time is required"
-      );
-    }
-
-
-    // ----------------------------------------------------------
-    // PARSE TIME
-    // ----------------------------------------------------------
-
-    const timeResult =
-      parseReminderTime(
-        timeText,
-        Boolean(recurring)
-      );
-
     console.log(
-      "🕐 Parsed time result:",
-      timeResult
+      "📅 Processing reminder:",
+      message
     );
 
+    console.log(
+      "🧠 AI result received by reminder pipeline:",
+      JSON.stringify(
+        aiResult,
+        null,
+        2
+      )
+    );
 
-    if (!timeResult) {
-      throw new Error(
-        "Unable to determine reminder time"
+    // ==========================================================
+    // STEP 1 — VALIDATE AI RESULT
+    // ==========================================================
+
+    if (!aiResult) {
+      console.log(
+        "❌ No AI result received"
       );
+
+      return {
+        isReminder: false,
+        reason: "missing_ai_result",
+      };
     }
-
-
-    // ----------------------------------------------------------
-    // VALIDATE PARSED RESULT
-    // ----------------------------------------------------------
 
     if (
-      timeResult.reminderType ===
-        "one_time" &&
-      !timeResult.scheduledFor
+      aiResult.intent !==
+      "create_reminder"
     ) {
-      throw new Error(
-        "One-time reminder has no scheduled time"
+      console.log(
+        "ℹ️ AI intent is not create_reminder:",
+        aiResult.intent
       );
+
+      return {
+        isReminder: false,
+        reason: "not_create_reminder",
+      };
     }
 
+    // ==========================================================
+    // STEP 2 — VALIDATE TASK
+    // ==========================================================
 
-    if (
-      timeResult.reminderType ===
-        "recurring" &&
-      !timeResult.intervalMinutes
-    ) {
-      throw new Error(
-        "Recurring reminder has no interval"
+    const task =
+      typeof aiResult.task === "string"
+        ? aiResult.task.trim()
+        : "";
+
+    if (!task) {
+      console.log(
+        "❌ AI did not provide a task"
       );
+
+      return {
+        isReminder: false,
+        reason: "missing_task",
+      };
     }
 
+    // ==========================================================
+    // STEP 3 — DETERMINE REMINDER TYPE
+    // ==========================================================
 
-    // ----------------------------------------------------------
-    // CREATE DATABASE OBJECT
-    // ----------------------------------------------------------
+    const isRecurring =
+      Boolean(
+        aiResult.recurring
+      );
 
     const reminderType =
-      timeResult.reminderType;
+      isRecurring
+        ? "recurring"
+        : "one_time";
 
+    // ==========================================================
+    // STEP 4 — GET SCHEDULED TIME
+    // ==========================================================
 
-    const nextRunAt =
-      reminderType === "one_time"
-        ? new Date(
-            timeResult.scheduledFor
-          )
-        : new Date(
-            Date.now() +
-              timeResult.intervalMinutes *
-                60 *
-                1000
-          );
+    /*
+     * For one-time reminders, AI should provide:
+     *
+     * scheduledFor:
+     * 2026-08-25T10:49:00+05:30
+     */
 
-
-    // ----------------------------------------------------------
-    // SAFETY CHECK
-    // ----------------------------------------------------------
+    let scheduledFor = null;
 
     if (
-      Number.isNaN(
-        nextRunAt.getTime()
-      )
+      aiResult.scheduledFor
     ) {
-      throw new Error(
-        "Invalid reminder date"
-      );
+      scheduledFor =
+        new Date(
+          aiResult.scheduledFor
+        );
     }
 
+    // ==========================================================
+    // STEP 5 — VALIDATE DATE
+    // ==========================================================
 
-    // ----------------------------------------------------------
-    // SAVE
-    // ----------------------------------------------------------
+    if (
+      reminderType === "one_time"
+    ) {
+      if (
+        !scheduledFor ||
+        Number.isNaN(
+          scheduledFor.getTime()
+        )
+      ) {
+        console.log(
+          "❌ Invalid scheduledFor:",
+          aiResult.scheduledFor
+        );
+
+        return {
+          isReminder: false,
+          reason: "invalid_scheduled_time",
+        };
+      }
+
+      // --------------------------------------------------------
+      // Do not allow a reminder to be created in the past.
+      // --------------------------------------------------------
+
+      if (
+        scheduledFor.getTime() <=
+        Date.now()
+      ) {
+        console.log(
+          "❌ AI returned a time in the past:",
+          scheduledFor
+        );
+
+        return {
+          isReminder: false,
+          reason: "scheduled_time_in_past",
+        };
+      }
+    }
+
+    // ==========================================================
+    // STEP 6 — RECURRING REMINDER
+    // ==========================================================
+
+    let intervalMinutes = null;
+
+    if (
+      reminderType === "recurring"
+    ) {
+      /*
+       * Support the structured format:
+       *
+       * recurrence:
+       * {
+       *   intervalMinutes: 120
+       * }
+       *
+       * Also support:
+       *
+       * intervalMinutes: 120
+       */
+
+      if (
+        aiResult.intervalMinutes
+      ) {
+        intervalMinutes =
+          Number(
+            aiResult.intervalMinutes
+          );
+      }
+
+      if (
+        aiResult.recurrence &&
+        typeof aiResult.recurrence ===
+          "object" &&
+        aiResult.recurrence.intervalMinutes
+      ) {
+        intervalMinutes =
+          Number(
+            aiResult.recurrence
+              .intervalMinutes
+          );
+      }
+
+      /*
+       * If we don't have an interval,
+       * don't create a broken recurring reminder.
+       */
+
+      if (
+        !intervalMinutes ||
+        Number.isNaN(
+          intervalMinutes
+        ) ||
+        intervalMinutes <= 0
+      ) {
+        console.log(
+          "⚠️ Recurring reminder detected but intervalMinutes is missing."
+        );
+
+        /*
+         * If AI gave a valid scheduledFor,
+         * we can still use it as the first run,
+         * but we cannot safely create a recurring
+         * interval without the interval.
+         */
+
+        return {
+          isReminder: false,
+          reason:
+            "missing_recurring_interval",
+        };
+      }
+    }
+
+    // ==========================================================
+    // STEP 7 — CALCULATE NEXT RUN
+    // ==========================================================
+
+    let nextRunAt = null;
+
+    if (
+      reminderType === "one_time"
+    ) {
+      nextRunAt =
+        scheduledFor;
+    }
+
+    if (
+      reminderType === "recurring"
+    ) {
+      nextRunAt =
+        scheduledFor ||
+        new Date(
+          Date.now() +
+            intervalMinutes *
+              60 *
+              1000
+        );
+    }
+
+    // ==========================================================
+    // STEP 8 — SAVE TO MONGODB
+    // ==========================================================
 
     const reminder =
       await Reminder.create({
         phoneNumber,
 
-        task:
-          task.trim(),
+        task,
 
         reminderType,
 
         scheduledFor:
           reminderType === "one_time"
-            ? nextRunAt
+            ? scheduledFor
             : null,
 
         intervalMinutes:
           reminderType === "recurring"
-            ? timeResult.intervalMinutes
+            ? intervalMinutes
             : null,
+
+        status:
+          "pending",
+
+        nextRunAt,
 
         acknowledged:
           false,
 
         acknowledgedAt:
           null,
-
-        escalationRequired:
-          false,
-
-        escalationAt:
-          null,
-
-        status:
-          "pending",
-
-        lastSentAt:
-          null,
-
-        nextRunAt,
       });
 
-
     console.log(
-      "======================================"
-    );
-
-    console.log(
-      "✅ REMINDER SAVED"
-    );
-
-    console.log(
-      "🆔 ID:",
+      "✅ Reminder saved:",
       reminder._id
     );
 
@@ -215,8 +329,13 @@ const createReminderFromData = async ({
     );
 
     console.log(
-      "📅 Scheduled for:",
+      "⏰ Scheduled for:",
       reminder.scheduledFor
+    );
+
+    console.log(
+      "🔁 Interval:",
+      reminder.intervalMinutes
     );
 
     console.log(
@@ -224,270 +343,29 @@ const createReminderFromData = async ({
       reminder.nextRunAt
     );
 
-    console.log(
-      "======================================"
-    );
-
+    // ==========================================================
+    // STEP 9 — RETURN RESULT
+    // ==========================================================
 
     return {
       isReminder: true,
 
       reminder,
+
+      aiResult,
     };
-
-  } catch (error) {
-
-    console.error(
-      "❌ createReminderFromData error:",
-      error.message
-    );
-
-    throw error;
-  }
-};
-
-
-// ============================================================
-// BACKWARD COMPATIBLE PIPELINE
-// ============================================================
-//
-// This function can still accept a plain message.
-//
-// BUT:
-// If task + timeText are already provided,
-// AI IS NOT CALLED AGAIN.
-//
-// ============================================================
-
-const processReminderMessage = async ({
-  phoneNumber,
-  message = null,
-
-  task = null,
-  timeText = null,
-  recurring = false,
-}) => {
-
-  try {
-
-    // ========================================================
-    // NEW FLOW
-    // ========================================================
-    //
-    // Webhook already extracted task/time.
-    //
-    // DO NOT CALL AI AGAIN.
-    //
-
-    if (
-      task &&
-      timeText
-    ) {
-
-      console.log(
-        "⚡ Using structured reminder data. Skipping second AI call."
-      );
-
-      return await createReminderFromData({
-        phoneNumber,
-        task,
-        timeText,
-        recurring,
-      });
-    }
-
-
-    // ========================================================
-    // OLD / DIRECT FLOW
-    // ========================================================
-
-    if (
-      !message ||
-      !message.trim()
-    ) {
-
-      throw new Error(
-        "Either message or task + timeText is required"
-      );
-    }
-
-
-    console.log(
-      "🤖 No structured reminder data provided."
-    );
-
-    console.log(
-      "🤖 Running AI parser for direct pipeline call."
-    );
-
-
-    const aiResult =
-      await parseReminder(
-        message
-      );
-
-
-    console.log(
-      "🧠 AI result:",
-      aiResult
-    );
-
-
-    if (
-      !aiResult ||
-      aiResult.intent !==
-        "create_reminder"
-    ) {
-
-      return {
-        isReminder: false,
-      };
-    }
-
-
-    // --------------------------------------------------------
-    // SUPPORT MULTIPLE REMINDERS
-    // --------------------------------------------------------
-
-    const reminders =
-      Array.isArray(
-        aiResult.reminders
-      )
-        ? aiResult.reminders
-        : [];
-
-
-    // --------------------------------------------------------
-    // BACKWARD COMPATIBILITY
-    // --------------------------------------------------------
-
-    if (
-      reminders.length === 0 &&
-      aiResult.task &&
-      aiResult.timeText
-    ) {
-
-      reminders.push({
-        task:
-          aiResult.task,
-
-        timeText:
-          aiResult.timeText,
-
-        recurring:
-          Boolean(
-            aiResult.recurring
-          ),
-      });
-    }
-
-
-    if (
-      reminders.length === 0
-    ) {
-
-      return {
-        isReminder: false,
-        reason:
-          "No reminder data extracted",
-      };
-    }
-
-
-    // --------------------------------------------------------
-    // CREATE ALL
-    // --------------------------------------------------------
-
-    const createdReminders = [];
-
-    const failedReminders = [];
-
-
-    for (
-      const reminderData
-      of reminders
-    ) {
-
-      try {
-
-        const result =
-          await createReminderFromData({
-            phoneNumber,
-
-            task:
-              reminderData.task,
-
-            timeText:
-              reminderData.timeText,
-
-            recurring:
-              Boolean(
-                reminderData.recurring
-              ),
-          });
-
-
-        if (
-          result?.reminder
-        ) {
-
-          createdReminders.push(
-            result.reminder
-          );
-        }
-
-      } catch (error) {
-
-        console.error(
-          "❌ Failed to create reminder:",
-          reminderData,
-
-          error.message
-        );
-
-        failedReminders.push({
-          ...reminderData,
-
-          error:
-            error.message,
-        });
-      }
-    }
-
-
-    return {
-      isReminder:
-        createdReminders.length >
-        0,
-
-      reminder:
-        createdReminders[0] ||
-        null,
-
-      reminders:
-        createdReminders,
-
-      failedReminders,
-    };
-
 
   } catch (error) {
 
     console.error(
       "❌ Reminder pipeline error:",
-      error.message
+      error
     );
 
     throw error;
   }
 };
 
-
-// ============================================================
-// EXPORTS
-// ============================================================
-
 module.exports = {
   processReminderMessage,
-  createReminderFromData,
 };

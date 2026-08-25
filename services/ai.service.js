@@ -1,1685 +1,911 @@
-const OpenAI = require("openai");
+// src/services/ai.service.js
 
-// ============================================================
-// MEMORY SERVICE
-// ============================================================
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
-const {
-  buildMemoryContext,
-} = require("./memory.service");
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
-// ============================================================
-// JSON REPAIR
-// ============================================================
+const OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL ||
+  "openai/gpt-4o-mini";
 
-let jsonrepair = null;
+const TIMEZONE =
+  process.env.USER_TIMEZONE ||
+  "Asia/Kolkata";
 
-try {
-  const repairModule = require("jsonrepair");
+/*
+|--------------------------------------------------------------------------
+| Basic validation
+|--------------------------------------------------------------------------
+*/
 
-  jsonrepair =
-    repairModule.jsonrepair ||
-    repairModule.default ||
-    repairModule;
-} catch (error) {
-  console.warn(
-    "⚠️ jsonrepair package not found. JSON repair fallback disabled."
-  );
+if (!OPENROUTER_API_KEY) {
+  console.warn("⚠️ OPENROUTER_API_KEY is not configured");
 }
 
-// ============================================================
-// OPENROUTER CLIENT
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| Current date/time context
+|--------------------------------------------------------------------------
+*/
 
-const client = new OpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY,
-  baseURL: "https://openrouter.ai/api/v1",
-});
+function getCurrentDateTimeContext() {
+  const now = new Date();
 
-const MODEL =
-  process.env.OPENROUTER_MODEL ||
-  "openai/gpt-oss-20b:free";
+  const formatter = new Intl.DateTimeFormat("en-IN", {
+    timeZone: TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
 
-// ============================================================
-// DEFAULT ROUTER RESULT
-// ============================================================
+  const parts = formatter.formatToParts(now);
 
-const defaultRouterResult = {
-  intent: "conversation",
-  confidence: 0.5,
-  task: null,
-  timeText: null,
-  recurring: false,
-  reminders: [],
-};
+  const values = {};
 
-// ============================================================
-// NORMALIZE REMINDER
-// ============================================================
-
-const normalizeReminder = (reminder) => {
-  if (
-    !reminder ||
-    typeof reminder !== "object" ||
-    Array.isArray(reminder)
-  ) {
-    return null;
+  for (const part of parts) {
+    if (part.type !== "literal") {
+      values[part.type] = part.value;
+    }
   }
 
-  const task =
-    typeof reminder.task === "string" &&
-    reminder.task.trim()
-      ? reminder.task.trim()
-      : null;
+  const date =
+    `${values.year}-${values.month}-${values.day}`;
 
-  const timeText =
-    typeof reminder.timeText === "string" &&
-    reminder.timeText.trim()
-      ? reminder.timeText.trim()
-      : null;
-
-  if (!task || !timeText) {
-    return null;
-  }
+  const time =
+    `${values.hour}:${values.minute}:${values.second}`;
 
   return {
-    task,
-    timeText,
-    recurring: Boolean(reminder.recurring),
+    date,
+    time,
+    timezone: TIMEZONE,
+    iso: now.toISOString()
   };
-};
+}
 
-// ============================================================
-// NORMALIZE ROUTER RESULT
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| Clean AI output
+|--------------------------------------------------------------------------
+*/
 
-const normalizeRouterResult = (result) => {
-  if (
-    !result ||
-    typeof result !== "object" ||
-    Array.isArray(result)
-  ) {
-    return null;
+function cleanAIResponse(text) {
+  if (!text || typeof text !== "string") {
+    return "";
   }
 
-  const allowedIntents = [
-    "create_reminder",
-    "acknowledge_reminder",
-    "conversation",
-    "cancel_reminder",
-    "reschedule_reminder",
-    "unknown",
-  ];
-
-  const intent = allowedIntents.includes(result.intent)
-    ? result.intent
-    : null;
-
-  if (!intent) {
-    return null;
-  }
-
-  let confidence = Number(result.confidence);
-
-  if (Number.isNaN(confidence)) {
-    confidence = 0.5;
-  }
-
-  confidence = Math.max(
-    0,
-    Math.min(1, confidence)
-  );
-
-  // ==========================================================
-  // MULTIPLE REMINDERS
-  // ==========================================================
-
-  let reminders = [];
-
-  if (Array.isArray(result.reminders)) {
-    reminders = result.reminders
-      .map(normalizeReminder)
-      .filter(Boolean);
-  }
-
-  // ==========================================================
-  // BACKWARD COMPATIBILITY
-  //
-  // If AI returns old:
-  //
-  // task
-  // timeText
-  //
-  // convert it into reminders[]
-  // ==========================================================
-
-  if (
-    reminders.length === 0 &&
-    typeof result.task === "string" &&
-    result.task.trim() &&
-    typeof result.timeText === "string" &&
-    result.timeText.trim()
-  ) {
-    reminders = [
-      {
-        task: result.task.trim(),
-        timeText: result.timeText.trim(),
-        recurring: Boolean(result.recurring),
-      },
-    ];
-  }
-
-  const firstReminder =
-    reminders.length > 0
-      ? reminders[0]
-      : null;
-
-  return {
-    intent,
-
-    confidence,
-
-    // Backward compatible fields
-    task:
-      firstReminder?.task || null,
-
-    timeText:
-      firstReminder?.timeText || null,
-
-    recurring:
-      firstReminder?.recurring || false,
-
-    // New multiple-reminder field
-    reminders,
-  };
-};
-
-// ============================================================
-// ACKNOWLEDGMENT DETECTION
-// ============================================================
-
-const isAcknowledgmentMessage = (message) => {
-  if (!message) {
-    return false;
-  }
-
-  const text = message
-    .trim()
-    .toLowerCase();
-
-  const normalized = text
-    .replace(/[.!?,]+$/g, "")
-    .trim();
+  let cleaned = text.trim();
 
   /*
-   IMPORTANT:
+   * Remove markdown code fences.
+   *
+   * ```json
+   * {...}
+   * ```
+   */
+  cleaned = cleaned.replace(/^```json\s*/i, "");
+  cleaned = cleaned.replace(/^```\s*/i, "");
+  cleaned = cleaned.replace(/\s*```$/i, "");
 
-   We intentionally DO NOT include:
+  cleaned = cleaned.trim();
 
-   ok
-   okay
-   yes
-   yep
-   yeah
-   sure
-   thanks
+  /*
+   * Sometimes models return text before/after JSON.
+   *
+   * Example:
+   *
+   * Here is the result:
+   * {...}
+   */
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
 
-   because those are normal conversational messages.
-
-   Example:
-
-   User: "Reminder: drink water"
-
-   User: "okay"
-
-   "okay" should NOT complete the reminder.
-  */
-
-  const acknowledgmentPatterns = [
-    "done",
-    "completed",
-    "complete",
-    "finished",
-    "finish",
-    "all done",
-    "task done",
-    "work done",
-    "i'm done",
-    "im done",
-    "i am done",
-    "i completed it",
-    "completed it",
-    "task completed",
-    "work completed",
-
-    // Thumbs-up
-    "👍",
-    "👍🏻",
-    "👍🏼",
-    "👍🏽",
-    "👍🏾",
-    "👍🏿",
-
-    // OK hand
-    "👌",
-    "👌🏻",
-    "👌🏼",
-    "👌🏽",
-    "👌🏾",
-    "👌🏿",
-
-    // Check marks
-    "✅",
-    "☑️",
-    "☑",
-    "✔️",
-    "✔",
-  ];
-
-  return acknowledgmentPatterns.includes(
-    normalized
-  );
-};
-
-// ============================================================
-// LOCAL REMINDER DETECTION
-// ============================================================
-
-const looksLikeReminder = (message) => {
-  if (!message) {
-    return false;
-  }
-
-  const text = message
-    .toLowerCase()
-    .trim();
-
-  const reminderPatterns = [
-    /\bremind me\b/,
-    /\breminder\b/,
-    /\bremind\b.*\b(at|on|tomorrow|today|tonight|in|after|every)\b/,
-    /\bremember to\b/,
-  ];
-
-  return reminderPatterns.some(
-    (pattern) => pattern.test(text)
-  );
-};
-
-// ============================================================
-// JSON CANDIDATE EXTRACTION
-// ============================================================
-
-const extractJsonCandidate = (content) => {
-  if (
-    !content ||
-    typeof content !== "string"
-  ) {
-    return null;
-  }
-
-  let cleaned = content.trim();
-
-  // Remove markdown fences
-  cleaned = cleaned
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-
-  const firstBrace =
-    cleaned.indexOf("{");
-
-  const lastBrace =
-    cleaned.lastIndexOf("}");
-
-  if (
-    firstBrace !== -1 &&
-    lastBrace !== -1 &&
-    lastBrace > firstBrace
-  ) {
-    cleaned = cleaned.slice(
+  if (firstBrace !== -1 && lastBrace !== -1) {
+    cleaned = cleaned.substring(
       firstBrace,
       lastBrace + 1
     );
   }
 
-  return cleaned;
-};
+  return cleaned.trim();
+}
 
-// ============================================================
-// SAFE AI JSON PARSER
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| Safely parse JSON
+|--------------------------------------------------------------------------
+*/
 
-const parseAIJson = (content) => {
-  if (
-    !content ||
-    typeof content !== "string"
-  ) {
+function parseAIJSON(text) {
+  const cleaned = cleanAIResponse(text);
+
+  if (!cleaned) {
     return null;
   }
-
-  const raw = content.trim();
-
-  // Prevent OpenRouter safety text from being treated as JSON
-  if (
-    raw
-      .toLowerCase()
-      .includes("user safety") ||
-    raw.toLowerCase() === "safe" ||
-    raw
-      .toLowerCase()
-      .includes("safety: safe")
-  ) {
-    console.warn(
-      "⚠️ AI returned safety text instead of router JSON."
-    );
-
-    return null;
-  }
-
-  const candidate =
-    extractJsonCandidate(raw);
-
-  if (!candidate) {
-    return null;
-  }
-
-  // ==========================================================
-  // NORMAL JSON
-  // ==========================================================
 
   try {
-    return JSON.parse(candidate);
+    return JSON.parse(cleaned);
   } catch (error) {
     console.warn(
-      "⚠️ Normal JSON.parse failed. Trying jsonrepair..."
+      "⚠️ Normal JSON.parse failed:",
+      error.message
     );
   }
 
-  // ==========================================================
-  // JSON REPAIR
-  // ==========================================================
+  /*
+   * Attempt to repair common JSON issues.
+   */
 
-  if (jsonrepair) {
-    try {
-      const repaired =
-        jsonrepair(candidate);
-
-      const parsed =
-        JSON.parse(repaired);
-
-      console.log(
-        "🔧 AI repaired JSON successfully."
-      );
-
-      return parsed;
-    } catch (error) {
-      console.error(
-        "❌ jsonrepair failed:",
-        error.message
-      );
-    }
-  }
-
-  return null;
-};
-
-// ============================================================
-// LOCAL FALLBACK ROUTER
-// ============================================================
-
-const localFallbackRouter = (message) => {
-  if (
-    !message ||
-    !message.trim()
-  ) {
-    return {
-      ...defaultRouterResult,
-
-      intent: "unknown",
-
-      confidence: 1,
-    };
-  }
-
-  // ==========================================================
-  // ACKNOWLEDGMENT
-  // ==========================================================
-
-  if (
-    isAcknowledgmentMessage(message)
-  ) {
-    return {
-      intent:
-        "acknowledge_reminder",
-
-      confidence: 1,
-
-      task: null,
-
-      timeText: null,
-
-      recurring: false,
-
-      reminders: [],
-    };
-  }
-
-  // ==========================================================
-  // REMINDER
-  // ==========================================================
-
-  if (
-    looksLikeReminder(message)
-  ) {
-    return {
-      intent:
-        "create_reminder",
-
-      confidence: 0.85,
-
-      task: null,
-
-      timeText: null,
-
-      recurring: false,
-
-      reminders: [],
-    };
-  }
-
-  // ==========================================================
-  // NORMAL CONVERSATION
-  // ==========================================================
-
-  return {
-    intent:
-      "conversation",
-
-    confidence: 0.7,
-
-    task: null,
-
-    timeText: null,
-
-    recurring: false,
-
-    reminders: [],
-  };
-};
-
-// ============================================================
-// AI ROUTER
-// ============================================================
-
-const parseReminder = async (message) => {
   try {
-    if (
-      !message ||
-      !message.trim()
-    ) {
-      return {
-        intent: "unknown",
-        confidence: 1,
-        task: null,
-        timeText: null,
-        recurring: false,
-        reminders: [],
-      };
-    }
+    let repaired = cleaned;
 
-    // ========================================================
-    // FAST ACKNOWLEDGMENT
-    // ========================================================
+    repaired = repaired
+      .replace(/[\u0000-\u001F]+/g, " ")
+      .replace(/,\s*}/g, "}")
+      .replace(/,\s*]/g, "]");
 
-    if (
-      isAcknowledgmentMessage(message)
-    ) {
-      const result = {
-        intent:
-          "acknowledge_reminder",
+    return JSON.parse(repaired);
+  } catch (error) {
+    console.error(
+      "❌ Could not parse AI JSON:",
+      error.message
+    );
 
-        confidence: 1,
+    return null;
+  }
+}
 
-        task: null,
+/*
+|--------------------------------------------------------------------------
+| Validate reminder object
+|--------------------------------------------------------------------------
+*/
 
-        timeText: null,
+function normalizeReminderResult(result) {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
 
-        recurring: false,
+  const normalized = {
+    intent: result.intent || "conversation",
 
-        reminders: [],
-      };
+    confidence:
+      typeof result.confidence === "number"
+        ? result.confidence
+        : 0,
 
-      console.log(
-        "🧠 Local AI Router Result:",
-        result
-      );
+    task:
+      typeof result.task === "string"
+        ? result.task.trim()
+        : null,
 
-      return result;
-    }
+    date:
+      typeof result.date === "string"
+        ? result.date.trim()
+        : null,
 
-    // ========================================================
-    // ROUTER PROMPT
-    // ========================================================
+    time:
+      typeof result.time === "string"
+        ? result.time.trim()
+        : null,
 
-    const systemPrompt = `
-You are the central AI router for a personal WhatsApp assistant.
+    scheduledFor:
+      typeof result.scheduledFor === "string"
+        ? result.scheduledFor.trim()
+        : null,
 
-Your job is ONLY to classify the user's message.
+    recurring:
+      Boolean(result.recurring),
 
-You are NOT a safety classifier.
+    recurrence:
+      result.recurrence || null,
 
-NEVER return:
-"User Safety: safe"
+    response:
+      typeof result.response === "string"
+        ? result.response.trim()
+        : null
+  };
 
-NEVER return plain text.
+  return normalized;
+}
 
-NEVER return markdown.
+/*
+|--------------------------------------------------------------------------
+| System prompt
+|--------------------------------------------------------------------------
+*/
 
-NEVER return an explanation.
+function buildSystemPrompt(context = {}) {
+  const current = getCurrentDateTimeContext();
 
-You MUST return exactly ONE JSON object.
+  const conversationHistory =
+    Array.isArray(context.history)
+      ? context.history
+      : [];
 
-============================================================
-ALLOWED INTENTS
-============================================================
+  return `
+You are the AI brain of a personal WhatsApp assistant.
 
-1. create_reminder
+Your job is NOT only to create reminders.
 
-The user wants to create one OR MORE new reminders.
+You are a personal assistant who can:
 
-Examples:
-
-"Remind me to call Mom tomorrow at 8 AM"
-
-"Remind me to drink water after 10 minutes"
-
-"Remind me to study every day at 8 PM"
-
-IMPORTANT:
-
-A SINGLE USER MESSAGE CAN CONTAIN MULTIPLE REMINDERS.
-
-Example:
-
-"Tomorrow remind me to complete CN video at 10 AM,
-then complete Growtern work at 12 PM,
-and complete Bhayasutra work at 2 PM."
-
-Return THREE reminders.
-
-============================================================
-2. acknowledge_reminder
-============================================================
-
-The user clearly indicates that a reminder/task has been completed.
-
-Examples:
-
-"done"
-
-"completed"
-
-"I completed it"
-
-"task done"
-
-"👍"
-
-"👌"
-
-"✅"
-
-"☑️"
-
-"✔️"
+- have normal conversations
+- understand emotions and casual messages
+- remember user preferences when provided
+- understand emojis
+- understand voice-to-text messages
+- create reminders
+- reschedule reminders
+- cancel reminders
+- complete reminders
+- understand recurring tasks
+- understand natural language dates and times
+- answer questions
+- help the user plan their day
 
 IMPORTANT:
 
-Do NOT classify these as acknowledgment:
+You must return ONLY valid JSON.
 
-"ok"
+Never return:
+- markdown
+- code fences
+- explanations outside JSON
+- "User Safety: safe"
+- "Here is the JSON"
+- plain text outside the JSON object
+
+--------------------------------------------------
+CURRENT TIME CONTEXT
+--------------------------------------------------
+
+Current date:
+${current.date}
+
+Current time:
+${current.time}
+
+Timezone:
+${current.timezone}
+
+Current UTC time:
+${current.iso}
+
+--------------------------------------------------
+USER CONTEXT
+--------------------------------------------------
+
+${context.userContext || "No additional user context available."}
+
+--------------------------------------------------
+RECENT CONVERSATION
+--------------------------------------------------
+
+${conversationHistory.length
+    ? JSON.stringify(conversationHistory.slice(-15))
+    : "No previous conversation available."
+}
+
+--------------------------------------------------
+INTENT TYPES
+--------------------------------------------------
+
+You must choose exactly one:
+
+conversation
+create_reminder
+reschedule_reminder
+cancel_reminder
+complete_reminder
+list_reminders
+unknown
+
+--------------------------------------------------
+CREATE REMINDER
+--------------------------------------------------
+
+Examples:
+
+"remind me to drink water at 10 49"
+
+"remind me to drink water at 10:49"
+
+"remind me to drink water at 10.49"
+
+"remind me to call mom tomorrow at 8"
+
+"remind me to study after 2 hours"
+
+"remind me every day at 7 to walk"
+
+For all of these, extract the actual task and schedule.
+
+IMPORTANT:
+
+Human time formats must be understood.
+
+These all mean the same thing:
+
+10 49
+10:49
+10.49
+10-49
+
+Therefore:
+
+"remind me to drink water at 10 49"
+
+must produce:
+
+time = "10:49"
+
+--------------------------------------------------
+TIME RULES
+--------------------------------------------------
+
+If the user says:
+
+"at 10 49"
+
+interpret it as:
+
+10:49
+
+If AM/PM is not specified:
+
+Use normal contextual interpretation.
+
+If the requested time is later today,
+schedule today.
+
+If the requested time has already passed today,
+schedule tomorrow unless the user explicitly says today.
+
+Examples:
+
+Current time: 10:47 AM
+
+User:
+"remind me to drink water at 10 49"
+
+Result:
+today at 10:49 AM
+
+Current time: 11:00 AM
+
+User:
+"remind me to drink water at 10 49"
+
+Result:
+tomorrow at 10:49 AM
+
+If user says:
+
+"tomorrow at 10 49"
+
+it MUST be tomorrow.
+
+If user says:
+
+"today at 10 49"
+
+it MUST be today.
+
+--------------------------------------------------
+RELATIVE TIME
+--------------------------------------------------
+
+Understand:
+
+after 5 minutes
+after 2 hours
+in 10 minutes
+in 3 hours
+after half an hour
+
+Convert these into an exact scheduledFor datetime.
+
+--------------------------------------------------
+RECURRING REMINDERS
+--------------------------------------------------
+
+Examples:
+
+"remind me every day at 7 to walk"
+
+"remind me every Monday at 9 to call mom"
+
+"remind me every morning to drink water"
+
+Set:
+
+recurring = true
+
+and provide:
+
+recurrence
+
+--------------------------------------------------
+NORMAL CONVERSATION
+--------------------------------------------------
+
+If the user is simply chatting:
+
+"how are you?"
+
+"tell me a joke"
+
+"I am bored"
+
+"what do you think about this?"
+
+Do NOT create a reminder.
+
+Return:
+
+intent = conversation
+
+and put the natural reply in:
+
+response
+
+--------------------------------------------------
+COMPLETION
+--------------------------------------------------
+
+The user may use:
+
+done
+ok
+okay
+👍
+👍🏻
+👍🏽
+👍🏿
+✅
+✔️
+completed
+finished
+yes done
+haan
+ho gaya
+kar diya
+
+These can indicate completion ONLY when there is an active reminder/task context.
+
+Do NOT mark a random reminder as completed merely because the user said:
 
 "okay"
 
-"yes"
+during normal conversation.
 
-"yep"
+If there is no clear active reminder context, use:
 
-"yeah"
+intent = conversation
 
-"sure"
+--------------------------------------------------
+EMOJI UNDERSTANDING
+--------------------------------------------------
 
-"thanks"
-
-Those are normal conversation unless they explicitly say
-the task was completed.
-
-============================================================
-3. conversation
-============================================================
-
-Normal conversation.
+Understand common emoji meanings.
 
 Examples:
 
-"How are you?"
+👍
+👍🏻
+👍🏽
+👍🏿
+✅
+✔️
 
-"I am feeling excited."
+can indicate completion when responding to an active reminder.
 
-"Tell me a joke."
+❌
+🚫
 
-"I got a project worth 1 crore."
+can indicate rejection/cancellation when clearly referring to an active reminder.
 
-"I usually drink water at 1:20 AM."
+❤️
+😊
+😂
+😢
+😡
 
-IMPORTANT:
+are normally conversational/emotional and should NOT automatically trigger reminder actions.
 
-A statement about a personal habit or routine is still
-conversation at the ROUTER level.
-
-The memory system separately detects and saves the routine.
-
-============================================================
-4. cancel_reminder
-============================================================
-
-The user explicitly wants to cancel an existing reminder.
-
-Example:
-
-"Cancel my reminder to call Mom"
-
-============================================================
-5. reschedule_reminder
-============================================================
-
-The user explicitly wants to change an EXISTING REMINDER.
+--------------------------------------------------
+RESCHEDULE
+--------------------------------------------------
 
 Examples:
 
-"Move my call Mom reminder to tomorrow at 5 PM"
+"change my water reminder to 11"
 
-"Reschedule my reminder to 6 PM"
+"reschedule the water reminder to 1:40"
 
-"Change my reminder to tomorrow"
+"make that reminder tomorrow at 8"
 
-IMPORTANT:
+Return:
 
-Do NOT classify a simple correction of a personal routine
-as reschedule_reminder.
+intent = reschedule_reminder
 
-Example:
+and extract the new date/time.
 
-"I usually drink water at 1:20 AM"
+--------------------------------------------------
+CANCEL
+--------------------------------------------------
 
-Then:
+Examples:
 
-"Sorry, it is 1:35 AM"
+"cancel my water reminder"
 
-This is NOT reschedule_reminder.
+"remove the timetable reminder"
 
-It is normal conversation / memory correction.
+"don't remind me about that"
 
-============================================================
-6. unknown
-============================================================
+Return:
 
-Use only when the message cannot reasonably be classified.
+intent = cancel_reminder
 
-============================================================
-MULTIPLE REMINDER OUTPUT
-============================================================
+--------------------------------------------------
+OUTPUT FORMAT
+--------------------------------------------------
 
-For ONE reminder:
-
-{
-  "intent": "create_reminder",
-  "confidence": 1,
-  "reminders": [
-    {
-      "task": "drink water",
-      "timeText": "tomorrow at 12 PM",
-      "recurring": false
-    }
-  ]
-}
-
-For MULTIPLE reminders:
+Return exactly this structure:
 
 {
   "intent": "create_reminder",
-  "confidence": 1,
-  "reminders": [
-    {
-      "task": "complete CN video",
-      "timeText": "tomorrow at 10 AM",
-      "recurring": false
-    },
-    {
-      "task": "complete Growtern work",
-      "timeText": "tomorrow at 12 PM",
-      "recurring": false
-    },
-    {
-      "task": "complete Bhayasutra work",
-      "timeText": "tomorrow at 2 PM",
-      "recurring": false
-    }
-  ]
+  "confidence": 0.98,
+  "task": "drink water",
+  "date": "2026-08-25",
+  "time": "10:49",
+  "scheduledFor": "2026-08-25T10:49:00+05:30",
+  "recurring": false,
+  "recurrence": null,
+  "response": null
 }
-
-============================================================
-OTHER INTENTS
-============================================================
 
 For conversation:
 
 {
   "intent": "conversation",
-  "confidence": 0.9,
-  "reminders": []
+  "confidence": 0.98,
+  "task": null,
+  "date": null,
+  "time": null,
+  "scheduledFor": null,
+  "recurring": false,
+  "recurrence": null,
+  "response": "Of course 😊 What are you thinking about?"
 }
 
-For acknowledgment:
+Never omit required fields.
 
-{
-  "intent": "acknowledge_reminder",
-  "confidence": 1,
-  "reminders": []
-}
+--------------------------------------------------
+FINAL RULE
+--------------------------------------------------
 
-============================================================
-IMPORTANT RULES
-============================================================
+Your response must be pure JSON.
 
-- Do not invent information.
-- Do not turn normal conversation into a reminder.
-- Do not turn routine corrections into reminder rescheduling.
-- Do not treat "okay" as task completion.
-- Do not treat "yes" as task completion.
-- Do not treat "thanks" as task completion.
-- Multiple reminders MUST be returned inside reminders[].
-- Each reminder must have its own task and timeText.
-- Keep the original meaning of the user's task.
-- Do not merge separate reminders.
-- Do not drop reminders.
-- Return JSON only.
+NO markdown.
+NO code fences.
+NO additional text.
 `;
-
-    let response;
-
-    // ========================================================
-    // OPENROUTER REQUEST
-    // ========================================================
-
-    try {
-      response =
-        await client.chat.completions.create({
-          model: MODEL,
-
-          temperature: 0,
-
-          messages: [
-            {
-              role: "system",
-              content: systemPrompt,
-            },
-
-            {
-              role: "user",
-              content: message.trim(),
-            },
-          ],
-
-          response_format: {
-            type: "json_object",
-          },
-        });
-    } catch (structuredError) {
-      console.warn(
-        "⚠️ Structured JSON request failed. Retrying without response_format..."
-      );
-
-      response =
-        await client.chat.completions.create({
-          model: MODEL,
-
-          temperature: 0,
-
-          messages: [
-            {
-              role: "system",
-              content: systemPrompt,
-            },
-
-            {
-              role: "user",
-              content: message.trim(),
-            },
-          ],
-        });
-    }
-
-    const content =
-      response
-        ?.choices?.[0]
-        ?.message?.content;
-
-    console.log(
-      "🤖 AI raw response:",
-      content
-    );
-
-    // ========================================================
-    // PARSE
-    // ========================================================
-
-    const parsed =
-      parseAIJson(content);
-
-    if (parsed) {
-      const normalized =
-        normalizeRouterResult(parsed);
-
-      if (normalized) {
-        console.log(
-          "🧠 AI Router Result:",
-          normalized
-        );
-
-        return normalized;
-      }
-
-      console.warn(
-        "⚠️ AI router returned an invalid object."
-      );
-    }
-
-    // ========================================================
-    // LOCAL FALLBACK
-    // ========================================================
-
-    console.warn(
-      "⚠️ Using local router fallback."
-    );
-
-    const fallback =
-      localFallbackRouter(message);
-
-    // ========================================================
-    // REMINDER EXTRACTION FALLBACK
-    // ========================================================
-
-    if (
-      fallback.intent ===
-      "create_reminder"
-    ) {
-      try {
-        const extractionResponse =
-          await client.chat.completions.create({
-            model: MODEL,
-
-            temperature: 0,
-
-            messages: [
-              {
-                role: "system",
-
-                content: `
-Extract ALL reminders from the user's message.
-
-A single message may contain multiple reminders.
-
-Return ONLY JSON.
-
-Example:
-
-{
-  "intent": "create_reminder",
-  "confidence": 1,
-  "reminders": [
-    {
-      "task": "complete CN video",
-      "timeText": "tomorrow at 10 AM",
-      "recurring": false
-    },
-    {
-      "task": "complete Growtern work",
-      "timeText": "tomorrow at 12 PM",
-      "recurring": false
-    }
-  ]
 }
 
-If no valid reminder can be extracted:
+/*
+|--------------------------------------------------------------------------
+| Call OpenRouter
+|--------------------------------------------------------------------------
+*/
 
-{
-  "intent": "unknown",
-  "confidence": 0,
-  "reminders": []
-}
-
-Do not merge multiple reminders.
-
-Return JSON only.
-`,
-              },
-
-              {
-                role: "user",
-                content:
-                  message.trim(),
-              },
-            ],
-
-            response_format: {
-              type: "json_object",
-            },
-          });
-
-        const extractionContent =
-          extractionResponse
-            ?.choices?.[0]
-            ?.message?.content;
-
-        console.log(
-          "🤖 AI reminder extraction response:",
-          extractionContent
-        );
-
-        const extraction =
-          parseAIJson(
-            extractionContent
-          );
-
-        const normalizedExtraction =
-          normalizeRouterResult(
-            extraction
-          );
-
-        if (
-          normalizedExtraction &&
-          normalizedExtraction.reminders.length > 0
-        ) {
-          console.log(
-            "🧠 AI Reminder Extraction Result:",
-            normalizedExtraction
-          );
-
-          return normalizedExtraction;
-        }
-      } catch (fallbackAIError) {
-        console.error(
-          "❌ Reminder extraction failed:",
-          fallbackAIError.message
-        );
-      }
-    }
-
-    console.log(
-      "🧠 Local Router Result:",
-      fallback
-    );
-
-    return fallback;
-
-  } catch (error) {
-    console.error(
-      "❌ OpenRouter error:",
-      error.response?.data ||
-        error.message
-    );
-
-    return localFallbackRouter(
-      message
+async function callAI(message, context = {}) {
+  if (!OPENROUTER_API_KEY) {
+    throw new Error(
+      "OPENROUTER_API_KEY is missing"
     );
   }
-};
 
-// ============================================================
-// CONVERSATION AI + MEMORY
-// ============================================================
+  const systemPrompt =
+    buildSystemPrompt(context);
 
-const generateConversationReply = async ({
-  message,
-  phoneNumber = null,
-  context = "",
-}) => {
-  try {
-    let memoryContext = "";
+  const payload = {
+    model: OPENROUTER_MODEL,
 
-    if (phoneNumber) {
-      try {
-        memoryContext =
-          await buildMemoryContext(
-            phoneNumber
-          );
-
-        console.log(
-          "🧠 User memory loaded for:",
-          phoneNumber
-        );
-      } catch (memoryError) {
-        console.error(
-          "⚠️ Could not load user memory:",
-          memoryError.message
-        );
-
-        memoryContext =
-          "No stored memory available.";
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt
+      },
+      {
+        role: "user",
+        content: message
       }
+    ],
+
+    temperature: 0.1,
+
+    /*
+     * Ask OpenRouter/model for JSON.
+     *
+     * Some models support this parameter.
+     */
+    response_format: {
+      type: "json_object"
     }
+  };
 
-    const combinedContext = `
-USER MEMORY:
+  const response = await fetch(
+    OPENROUTER_URL,
+    {
+      method: "POST",
 
-${memoryContext || "No stored memory available."}
+      headers: {
+        "Authorization":
+          `Bearer ${OPENROUTER_API_KEY}`,
 
+        "Content-Type":
+          "application/json",
 
-RECENT CONTEXT:
+        "HTTP-Referer":
+          process.env.APP_URL ||
+          "https://whatsapp-pa.onrender.com",
 
-${context || "No additional context available."}
-`;
+        "X-Title":
+          "WhatsApp Personal Assistant"
+      },
 
-    const systemPrompt = `
-You are a friendly personal WhatsApp assistant.
-
-You are NOT just a reminder bot.
-
-You are a personal assistant who knows the user over time.
-
-Use the user's memory and recent conversation context
-to understand what the user means.
-
-============================================================
-PERSONALIZATION
-============================================================
-
-Use known information naturally.
-
-If the user tells you:
-
-"My name is Nitin."
-
-Remember and use Nitin.
-
-If the user says:
-
-"My favorite color is green."
-
-Remember it.
-
-If the user says:
-
-"I usually walk at 7 PM."
-
-Remember it.
-
-If the user later says:
-
-"Actually it is 6 PM."
-
-Understand that this may be a correction to the previous
-routine.
-
-Do NOT respond:
-
-"I understand you want to reschedule a reminder."
-
-unless the user explicitly mentioned a reminder.
-
-Instead respond naturally:
-
-"Got it 😊 I've updated your usual walking time to 6 PM."
-
-============================================================
-CONTEXT REFERENCES
-============================================================
-
-Understand phrases like:
-
-- it
-- that
-- this
-- them
-- he
-- she
-- my usual time
-- my normal routine
-- actually
-- sorry
-- I meant
-- change that
-- make that
-- no, it is
-
-Use recent context and memory to resolve them.
-
-============================================================
-IMPORTANT RULES
-============================================================
-
-- Do not mention the internal memory database.
-- Do not reveal internal memory structures.
-- Do not invent facts.
-- Only use information present in memory/context.
-- If something is uncertain, ask naturally.
-- Do not force conversations into reminders.
-- Do not repeatedly say "I am Reminder PA".
-- Do not sound robotic.
-- Be warm and natural.
-- Keep WhatsApp responses reasonably concise.
-
-============================================================
-USER MEMORY + CONTEXT
-============================================================
-
-${combinedContext}
-
-============================================================
-CURRENT MESSAGE
-============================================================
-
-${message}
-`;
-
-    const response =
-      await client.chat.completions.create({
-        model: MODEL,
-
-        temperature: 0.7,
-
-        messages: [
-          {
-            role: "system",
-            content:
-              systemPrompt,
-          },
-
-          {
-            role: "user",
-            content: message,
-          },
-        ],
-      });
-
-    const reply =
-      response
-        ?.choices?.[0]
-        ?.message?.content;
-
-    if (
-      !reply ||
-      !reply.trim()
-    ) {
-      return "I'm here. Tell me what's on your mind. 😊";
+      body: JSON.stringify(payload)
     }
+  );
 
-    return reply.trim();
+  const responseText =
+    await response.text();
 
+  if (!response.ok) {
+    console.error(
+      "❌ OpenRouter HTTP error:",
+      response.status,
+      responseText
+    );
+
+    throw new Error(
+      `OpenRouter request failed: ${response.status}`
+    );
+  }
+
+  let data;
+
+  try {
+    data = JSON.parse(responseText);
   } catch (error) {
     console.error(
-      "❌ Conversation AI error:",
-      error.response?.data ||
-        error.message
+      "❌ OpenRouter returned invalid HTTP JSON:",
+      responseText
     );
 
-    return "I'm here with you. Tell me what you need help with. 😊";
+    throw new Error(
+      "Invalid OpenRouter response"
+    );
   }
-};
 
-// ============================================================
-// MEMORY EXTRACTION
-// ============================================================
+  const content =
+    data?.choices?.[0]?.message?.content;
 
-const extractMemory = async ({
-  message,
-  phoneNumber = null,
-}) => {
-  try {
-    if (
-      !message ||
-      !message.trim()
-    ) {
-      return {
-        shouldRemember: false,
-        isUpdate: false,
-        type: null,
-        key: null,
-        value: null,
-      };
-    }
-
-    let memoryContext =
-      "No stored memory available.";
-
-    if (phoneNumber) {
-      try {
-        memoryContext =
-          await buildMemoryContext(
-            phoneNumber
-          );
-
-        console.log(
-          "🧠 Memory context loaded for extraction."
-        );
-      } catch (memoryError) {
-        console.error(
-          "⚠️ Memory context loading failed:",
-          memoryError.message
-        );
-      }
-    }
-
-    const systemPrompt = `
-You are the memory extraction system for a personal AI assistant.
-
-Your job is to determine whether the user's message contains
-information that should be remembered.
-
-You have access to the user's existing memory.
-
-============================================================
-MEMORY TYPES
-============================================================
-
-Allowed types:
-
-fact
-preference
-routine
-
-============================================================
-FACT
-============================================================
-
-Example:
-
-"My name is Nitin."
-
-Return:
-
-{
-  "shouldRemember": true,
-  "isUpdate": false,
-  "type": "fact",
-  "key": "name",
-  "value": "Nitin"
-}
-
-============================================================
-PREFERENCE
-============================================================
-
-Example:
-
-"My favorite color is green."
-
-Return:
-
-{
-  "shouldRemember": true,
-  "isUpdate": false,
-  "type": "preference",
-  "key": "favorite_color",
-  "value": "green"
-}
-
-============================================================
-ROUTINE
-============================================================
-
-Example:
-
-"I usually drink water at 1:20 AM."
-
-Return:
-
-{
-  "shouldRemember": true,
-  "isUpdate": false,
-  "type": "routine",
-  "key": "drink_water",
-  "value": "1:20 AM"
-}
-
-Example:
-
-"I usually walk at 7 PM."
-
-Return:
-
-{
-  "shouldRemember": true,
-  "isUpdate": false,
-  "type": "routine",
-  "key": "walking",
-  "value": "7 PM"
-}
-
-============================================================
-CONTEXTUAL CORRECTIONS
-============================================================
-
-The user may correct something without repeating the subject.
-
-Example:
-
-Previous:
-"I usually drink water at 1:20 AM."
-
-Current:
-"Sorry it is 1:35 AM."
-
-This means:
-
-Update drink_water.
-
-Return:
-
-{
-  "shouldRemember": true,
-  "isUpdate": true,
-  "type": "routine",
-  "key": "drink_water",
-  "value": "1:35 AM"
-}
-
-============================================================
-CORRECTION PHRASES
-============================================================
-
-Pay special attention to:
-
-- actually
-- sorry
-- I meant
-- I mean
-- no, it is
-- no, it's
-- change that
-- make that
-- not
-- instead
-- from now on
-
-============================================================
-DO NOT REMEMBER
-============================================================
-
-Do not save:
-
-"Okay."
-
-"Thanks."
-
-"Haha 😂"
-
-"Tell me a joke."
-
-"How are you?"
-
-"What is the weather?"
-
-Temporary emotions should normally not be stored.
-
-============================================================
-EXISTING MEMORY
-============================================================
-
-${memoryContext}
-
-============================================================
-CURRENT USER MESSAGE
-============================================================
-
-${message.trim()}
-
-============================================================
-OUTPUT
-============================================================
-
-If useful memory exists:
-
-{
-  "shouldRemember": true,
-  "isUpdate": false,
-  "type": "fact | preference | routine",
-  "key": "short_snake_case_key",
-  "value": "short value"
-}
-
-For an update:
-
-{
-  "shouldRemember": true,
-  "isUpdate": true,
-  "type": "fact | preference | routine",
-  "key": "existing memory key",
-  "value": "new value"
-}
-
-Otherwise:
-
-{
-  "shouldRemember": false,
-  "isUpdate": false,
-  "type": null,
-  "key": null,
-  "value": null
-}
-
-Return JSON only.
-`;
-
-    let response;
-
-    try {
-      response =
-        await client.chat.completions.create({
-          model: MODEL,
-
-          temperature: 0,
-
-          messages: [
-            {
-              role: "system",
-              content:
-                systemPrompt,
-            },
-
-            {
-              role: "user",
-              content:
-                message.trim(),
-            },
-          ],
-
-          response_format: {
-            type: "json_object",
-          },
-        });
-    } catch (structuredError) {
-      console.warn(
-        "⚠️ Memory structured JSON request failed. Retrying..."
-      );
-
-      response =
-        await client.chat.completions.create({
-          model: MODEL,
-
-          temperature: 0,
-
-          messages: [
-            {
-              role: "system",
-              content:
-                systemPrompt,
-            },
-
-            {
-              role: "user",
-              content:
-                message.trim(),
-            },
-          ],
-        });
-    }
-
-    const content =
-      response
-        ?.choices?.[0]
-        ?.message?.content;
-
-    console.log(
-      "🧠 Memory extractor raw response:",
-      content
+  if (!content) {
+    console.error(
+      "❌ OpenRouter response missing content:",
+      JSON.stringify(data, null, 2)
     );
 
-    const parsed =
-      parseAIJson(content);
+    throw new Error(
+      "AI response content missing"
+    );
+  }
 
-    if (!parsed) {
-      console.warn(
-        "⚠️ Memory extractor returned invalid JSON."
+  console.log(
+    "🤖 AI raw response:",
+    content
+  );
+
+  return content;
+}
+
+/*
+|--------------------------------------------------------------------------
+| Analyze user message
+|--------------------------------------------------------------------------
+*/
+
+async function analyzeMessage(
+  message,
+  context = {}
+) {
+  if (!message || typeof message !== "string") {
+    throw new Error(
+      "Message is required"
+    );
+  }
+
+  console.log(
+    "🧠 AI analyzing:",
+    message
+  );
+
+  let rawResponse;
+
+  try {
+    rawResponse =
+      await callAI(
+        message,
+        context
       );
+  } catch (error) {
+    console.error(
+      "❌ AI call failed:",
+      error.message
+    );
 
-      return {
-        shouldRemember: false,
-        isUpdate: false,
-        type: null,
-        key: null,
-        value: null,
-      };
-    }
+    throw error;
+  }
 
-    if (
-      parsed.shouldRemember !== true
-    ) {
-      return {
-        shouldRemember: false,
-        isUpdate: false,
-        type: null,
-        key: null,
-        value: null,
-      };
-    }
+  const parsed =
+    parseAIJSON(rawResponse);
 
-    const allowedTypes = [
-      "fact",
-      "preference",
-      "routine",
-    ];
+  if (!parsed) {
+    console.error(
+      "❌ AI returned invalid JSON"
+    );
 
-    if (
-      !allowedTypes.includes(
-        parsed.type
-      )
-    ) {
-      return {
-        shouldRemember: false,
-        isUpdate: false,
-        type: null,
-        key: null,
-        value: null,
-      };
-    }
-
-    if (
-      typeof parsed.key !== "string" ||
-      !parsed.key.trim()
-    ) {
-      return {
-        shouldRemember: false,
-        isUpdate: false,
-        type: null,
-        key: null,
-        value: null,
-      };
-    }
-
-    if (
-      typeof parsed.value !== "string" ||
-      !parsed.value.trim()
-    ) {
-      return {
-        shouldRemember: false,
-        isUpdate: false,
-        type: null,
-        key: null,
-        value: null,
-      };
-    }
-
-    const result = {
-      shouldRemember: true,
-
-      isUpdate:
-        parsed.isUpdate === true,
-
-      type:
-        parsed.type,
-
-      key:
-        parsed.key.trim(),
-
-      value:
-        parsed.value.trim(),
+    /*
+     * Return a safe conversation response
+     * rather than accidentally creating a reminder.
+     */
+    return {
+      intent: "conversation",
+      confidence: 0,
+      task: null,
+      date: null,
+      time: null,
+      scheduledFor: null,
+      recurring: false,
+      recurrence: null,
+      response:
+        "Sorry, I couldn't understand that properly. Could you say it another way?"
     };
+  }
 
-    console.log(
-      "🧠 Memory extraction result:",
-      result
+  const result =
+    normalizeReminderResult(parsed);
+
+  if (!result) {
+    return {
+      intent: "conversation",
+      confidence: 0,
+      task: null,
+      date: null,
+      time: null,
+      scheduledFor: null,
+      recurring: false,
+      recurrence: null,
+      response:
+        "I'm here 😊 Tell me what you'd like me to help with."
+    };
+  }
+
+  console.log(
+    "🧠 AI Router Result:",
+    result
+  );
+
+  return result;
+}
+
+/*
+|--------------------------------------------------------------------------
+| Validate scheduled time
+|--------------------------------------------------------------------------
+*/
+
+function validateScheduledTime(result) {
+  if (!result) {
+    return false;
+  }
+
+  if (
+    result.intent !== "create_reminder" &&
+    result.intent !== "reschedule_reminder"
+  ) {
+    return true;
+  }
+
+  if (!result.task) {
+    console.warn(
+      "⚠️ Reminder has no task"
     );
 
-    return result;
+    return false;
+  }
 
-  } catch (error) {
-    console.error(
-      "❌ Memory extraction error:",
-      error.response?.data ||
-        error.message
+  if (!result.scheduledFor) {
+    console.warn(
+      "⚠️ Reminder has no scheduledFor"
+    );
+
+    return false;
+  }
+
+  const date =
+    new Date(result.scheduledFor);
+
+  if (Number.isNaN(date.getTime())) {
+    console.warn(
+      "⚠️ Invalid scheduledFor:",
+      result.scheduledFor
+    );
+
+    return false;
+  }
+
+  return true;
+}
+
+/*
+|--------------------------------------------------------------------------
+| Main helper used by controllers
+|--------------------------------------------------------------------------
+*/
+
+async function processMessage(
+  message,
+  context = {}
+) {
+  const result =
+    await analyzeMessage(
+      message,
+      context
+    );
+
+  /*
+   * Never create a reminder if the
+   * AI did not provide enough information.
+   */
+  if (
+    result.intent === "create_reminder" &&
+    !validateScheduledTime(result)
+  ) {
+    console.warn(
+      "⚠️ AI identified reminder but scheduling data is incomplete."
     );
 
     return {
-      shouldRemember: false,
-      isUpdate: false,
-      type: null,
-      key: null,
-      value: null,
+      ...result,
+      intent: "conversation",
+      response:
+        "I understood that you want a reminder, but I couldn't determine the exact time. Could you tell me when you'd like me to remind you?"
     };
   }
-};
 
-// ============================================================
-// BACKWARD-COMPATIBLE ALIASES
-// ============================================================
+  return result;
+}
 
-const analyzeMessage =
-  parseReminder;
-
-const generateConversationResponse =
-  generateConversationReply;
-
-// ============================================================
-// EXPORTS
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| Exports
+|--------------------------------------------------------------------------
+*/
 
 module.exports = {
-  parseReminder,
-
   analyzeMessage,
-
-  generateConversationReply,
-
-  generateConversationResponse,
-
-  extractMemory,
-
-  // Exported for testing/debugging if required
-  isAcknowledgmentMessage,
-
-  looksLikeReminder,
+  processMessage,
+  callAI,
+  parseAIJSON,
+  cleanAIResponse,
+  normalizeReminderResult,
+  validateScheduledTime,
+  getCurrentDateTimeContext
 };
