@@ -30,7 +30,6 @@ const googleCalendarCallback = async (
   // ==========================================================
 
   if (error) {
-
     console.log(
       "[CALENDAR] Google authorization failed:",
       error
@@ -38,10 +37,26 @@ const googleCalendarCallback = async (
 
     return res.status(400).send(`
       <html>
-        <body style="font-family: Arial; padding: 40px;">
+        <head>
+          <title>Google Calendar Not Connected</title>
+        </head>
+
+        <body style="
+          font-family: Arial, sans-serif;
+          padding: 40px;
+          text-align: center;
+        ">
+
           <h2>❌ Google Calendar Not Connected</h2>
-          <p>Google Calendar authorization was not completed.</p>
-          <p>You can close this window and return to WhatsApp.</p>
+
+          <p>
+            Google Calendar authorization was not completed.
+          </p>
+
+          <p>
+            You can close this window and return to WhatsApp.
+          </p>
+
         </body>
       </html>
     `);
@@ -52,28 +67,42 @@ const googleCalendarCallback = async (
   // ==========================================================
 
   if (!code || !state) {
-
     console.log(
       "[CALENDAR] Missing OAuth code or state"
     );
 
     return res.status(400).send(`
       <html>
-        <body style="font-family: Arial; padding: 40px;">
+        <head>
+          <title>Google Calendar Not Connected</title>
+        </head>
+
+        <body style="
+          font-family: Arial, sans-serif;
+          padding: 40px;
+          text-align: center;
+        ">
+
           <h2>❌ Google Calendar Not Connected</h2>
-          <p>Missing Google authorization details.</p>
-          <p>You can close this window and return to WhatsApp.</p>
+
+          <p>
+            Missing Google authorization details.
+          </p>
+
+          <p>
+            Please return to WhatsApp and request a new connection link.
+          </p>
+
         </body>
       </html>
     `);
   }
 
   // ==========================================================
-  // EXCHANGE CODE
+  // EXCHANGE GOOGLE CODE FOR TOKENS
   // ==========================================================
 
   try {
-
     const phoneNumber =
       await exchangeCodeForTokens({
         code,
@@ -99,23 +128,21 @@ const googleCalendarCallback = async (
     );
 
     // ========================================================
-    // CONNECTION SUCCESS
+    // SUCCESS
     // ========================================================
 
     if (
       connection.connected === true
     ) {
-
       console.log(
         "✅ Google Calendar connected successfully"
       );
 
       // ------------------------------------------------------
-      // SEND WHATSAPP SUCCESS MESSAGE
+      // SEND WHATSAPP CONFIRMATION
       // ------------------------------------------------------
 
       try {
-
         const emailText =
           connection.email
             ? `\n📧 Account: ${connection.email}`
@@ -125,8 +152,8 @@ const googleCalendarCallback = async (
           phoneNumber,
 
           "✅ Google Calendar connected successfully! 🎉" +
-          emailText +
-          "\n\nYou can now use your calendar with your AI PA."
+            emailText +
+            "\n\nYou can now use your calendar with your AI PA."
         );
 
         console.log(
@@ -136,7 +163,6 @@ const googleCalendarCallback = async (
       } catch (
         whatsappError
       ) {
-
         console.error(
           "[CALENDAR] Failed to send WhatsApp success message:",
           whatsappError.message
@@ -183,7 +209,6 @@ const googleCalendarCallback = async (
     );
 
     try {
-
       await sendWhatsAppMessage(
         phoneNumber,
 
@@ -193,19 +218,35 @@ const googleCalendarCallback = async (
     } catch (
       whatsappError
     ) {
-
       console.error(
-        "[CALENDAR] Failed to send connection failure message:",
+        "[CALENDAR] Failed to send WhatsApp failure message:",
         whatsappError.message
       );
     }
 
     return res.status(400).send(`
       <html>
-        <body style="font-family: Arial; padding: 40px; text-align: center;">
+        <head>
+          <title>Google Calendar Not Connected</title>
+        </head>
+
+        <body style="
+          font-family: Arial, sans-serif;
+          padding: 40px;
+          text-align: center;
+        ">
+
           <h2>⚠️ Google Calendar Not Connected</h2>
-          <p>The authorization completed, but the connection could not be confirmed.</p>
-          <p>Please return to WhatsApp and try again.</p>
+
+          <p>
+            The authorization completed, but the connection
+            could not be confirmed.
+          </p>
+
+          <p>
+            Please return to WhatsApp and try again.
+          </p>
+
         </body>
       </html>
     `);
@@ -217,19 +258,8 @@ const googleCalendarCallback = async (
     console.error(
       "[CALENDAR] Google OAuth callback failed:",
       callbackError.response?.data ||
-      callbackError.message
+        callbackError.message
     );
-
-    // ========================================================
-    // TRY TO SEND FAILURE MESSAGE
-    // ========================================================
-
-    /*
-     * At this point we may not know the phone number because
-     * exchangeCodeForTokens() failed before returning it.
-     *
-     * Therefore we don't attempt to guess the WhatsApp number.
-     */
 
     return res.status(400).send(`
       <html>
@@ -243,57 +273,28 @@ const googleCalendarCallback = async (
           text-align: center;
         ">
 
-          <h2>❌ Google Calendar Not Connected</h2>
+          <h2>❌ Google Calendar Connection Failed</h2>
 
           <p>
             Google Calendar could not be connected.
           </p>
 
           <p>
-            Please return to WhatsApp and request a new connection link.
+            Please return to WhatsApp and request
+            a new connection link.
           </p>
 
         </body>
-
       </html>
     `);
   }
 };
 
+
+// ============================================================
+// EXPORTS
+// ============================================================
+
 module.exports = {
-  createOAuthClient,
-
-  generateAuthUrl,
-
-  exchangeCodeForTokens,
-
-  getPhoneNumberByOAuthState,
-
-  saveGoogleTokens,
-
-  getAuthenticatedClient,
-
-  getTodaysEvents,
-
-  getTodayEvents,
-
-  getTomorrowEvents,
-
-  getEventsForDate,
-
-  getEventsForRange,
-
-  createCalendarEvent,
-
-  updateCalendarEvent,
-
-  deleteCalendarEvent,
-
-  getThisWeekEvents,
-
-  findMatchingCalendarEvents,
-
-  getCalendarConnection,
-
-  disconnectCalendar,
+  googleCalendarCallback,
 };
